@@ -1,0 +1,27 @@
+# Copy to .dev.vars and fill in values
+# These are also needed in prod via `wrangler secret put`
+
+# Brave Search API
+BRAVE_SEARCH_API_KEY=
+
+# Cloudflare API (for AI Gateway BYOK)
+CF_API_TOKEN=
+CF_ACCOUNT_ID=
+
+# Cloudflare Access (optional, for protected routes)
+ACCESS_POLICY_AUD=
+ACCESS_TEAM_DOMAIN=
+
+# OAuth - Google
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+# OAuth - GitHub  
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# OAuth callback base URL
+OAUTH_REDIRECT_BASE=https://macrodata.example.com
+
+# Allowed users (comma-separated emails)
+ALLOWED_USERS=you@example.com

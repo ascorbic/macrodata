@@ -1,0 +1,59 @@
+diff --git a/dist/client-Cxno-5sH.d.ts b/dist/client-Cxno-5sH.d.ts
+index bc8b9e26e5c08efe3291de36ad25637525565601..f4741cde812783084ecf8230a4f7e95b59db1374 100644
+--- a/dist/client-Cxno-5sH.d.ts
++++ b/dist/client-Cxno-5sH.d.ts
+@@ -55,6 +55,7 @@ interface ServeOptions {
+   corsOptions?: CORSOptions;
+   transport?: BaseTransportType;
+   jurisdiction?: DurableObjectJurisdiction;
++  sessionId?: string;
+ }
+ //#endregion
+ //#region src/mcp/client-connection.d.ts
+diff --git a/dist/mcp/index.js b/dist/mcp/index.js
+index e040be5f893af69254bbc4b07507fdfc6b761f9e..1aa5a3056ea423f68c05d1d306243f24fcc9d57e 100644
+--- a/dist/mcp/index.js
++++ b/dist/mcp/index.js
+@@ -132,7 +132,7 @@ const createStreamingHttpHandler = (basePath, namespace, options = {}) => {
+ 					});
+ 					return new Response(body$1, { status: 400 });
+ 				}
+-				sessionId = sessionId ?? namespace.newUniqueId().toString();
++				sessionId = sessionId ?? options.sessionId ?? namespace.newUniqueId().toString();
+ 				const agent = await getAgentByName(namespace, `streamable-http:${sessionId}`, {
+ 					props: ctx.props,
+ 					jurisdiction: options.jurisdiction
+@@ -356,7 +356,7 @@ const createLegacySseHandler = (basePath, namespace, options = {}) => {
+ 	return async (request, ctx) => {
+ 		const url = new URL(request.url);
+ 		if (request.method === "GET" && basePattern.test(url)) {
+-			const sessionId = url.searchParams.get("sessionId") || namespace.newUniqueId().toString();
++			const sessionId = url.searchParams.get("sessionId") || options.sessionId || namespace.newUniqueId().toString();
+ 			const { readable, writable } = new TransformStream();
+ 			const writer = writable.getWriter();
+ 			const encoder = new TextEncoder();
+@@ -1466,7 +1466,7 @@ var McpAgent = class McpAgent extends Agent {
+ 	/** Return a handler for the given path for this MCP.
+ 	* Defaults to Streamable HTTP transport.
+ 	*/
+-	static serve(path, { binding = "MCP_OBJECT", corsOptions, transport = "streamable-http", jurisdiction } = {}) {
++	static serve(path, { binding = "MCP_OBJECT", corsOptions, transport = "streamable-http", jurisdiction, sessionId } = {}) {
+ 		return { async fetch(request, env, ctx) {
+ 			const corsResponse = handleCORS(request, corsOptions);
+ 			if (corsResponse) return corsResponse;
+@@ -1477,11 +1477,13 @@ var McpAgent = class McpAgent extends Agent {
+ 			switch (transport) {
+ 				case "streamable-http": return createStreamingHttpHandler(path, namespace, {
+ 					corsOptions,
+-					jurisdiction
++					jurisdiction,
++					sessionId
+ 				})(request, ctx);
+ 				case "sse": return createLegacySseHandler(path, namespace, {
+ 					corsOptions,
+-					jurisdiction
++					jurisdiction,
++					sessionId
+ 				})(request, ctx);
+ 				default: return new Response("Invalid MCP transport mode. Only `streamable-http` or `sse` are allowed.", { status: 500 });
+ 			}

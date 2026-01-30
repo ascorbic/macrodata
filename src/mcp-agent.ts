@@ -23,12 +23,31 @@ import type {
 	McpTool,
 	QueryResult,
 	MemoryStats,
+	StateEvent,
 } from "./types";
 
 export class MemoryAgent extends Agent<Env> {
 	// MCP server instance - persists across requests, reset on new session
 	private mcpServer: McpServer | null = null;
 	private mcpTransport: InstanceType<typeof WorkerTransport> | null = null;
+
+	// ==========================================
+	// WebSocket Handling (via partyserver)
+	// ==========================================
+
+	/** Broadcast an event to all connected WebSocket clients */
+	private broadcastEvent(event: StateEvent) {
+		const message = JSON.stringify(event);
+
+		// Use partyserver's broadcast method
+		try {
+			this.broadcast(message);
+			console.log(`[WS] Broadcast event: ${event.source}/${event.action}/${event.key}`);
+		} catch (err) {
+			// No connections, or broadcast not available
+			console.log(`[WS] No clients to broadcast to`);
+		}
+	}
 
 	private createMcpServer(): McpServer {
 		const server = new McpServer({
@@ -206,6 +225,7 @@ export class MemoryAgent extends Agent<Env> {
 	/** Save a core context file */
 	async saveCoreContext(which: CoreContextType, content: string): Promise<void> {
 		const now = new Date().toISOString();
+		const existing = this.getCoreContext(which);
 
 		this.ctx.storage.sql.exec(
 			"INSERT OR REPLACE INTO core_context (which, content, updated_at) VALUES (?, ?, ?)",
@@ -224,6 +244,16 @@ export class MemoryAgent extends Agent<Env> {
 				metadata: { type: "core", name: which, timestamp: Date.now(), content },
 			},
 		]);
+
+		// Notify subscribers
+		this.broadcastEvent({
+			type: "state_changed",
+			source: "core",
+			action: existing ? "updated" : "created",
+			key: which,
+			summary: content.slice(0, 100),
+			timestamp: now,
+		});
 	}
 
 	// ==========================================
@@ -280,6 +310,16 @@ export class MemoryAgent extends Agent<Env> {
 			},
 		]);
 
+		// Notify subscribers
+		this.broadcastEvent({
+			type: "state_changed",
+			source: "knowledge",
+			action: existing ? "updated" : "created",
+			key: `${type}/${name}`,
+			summary: content.slice(0, 100),
+			timestamp: now,
+		});
+
 		return id;
 	}
 
@@ -291,6 +331,16 @@ export class MemoryAgent extends Agent<Env> {
 
 		this.ctx.storage.sql.exec("DELETE FROM knowledge WHERE type = ? AND name = ?", type, name);
 		await this.env.VECTORIZE.deleteByIds([id]);
+
+		// Notify subscribers
+		this.broadcastEvent({
+			type: "state_changed",
+			source: "knowledge",
+			action: "deleted",
+			key: `${type}/${name}`,
+			timestamp: new Date().toISOString(),
+		});
+
 		return true;
 	}
 
@@ -321,6 +371,18 @@ export class MemoryAgent extends Agent<Env> {
 				metadata: { type: "journal", topic, timestamp: Date.now(), content },
 			},
 		]);
+
+		// Notify subscribers (skip audit entries to reduce noise)
+		if (intent !== "audit") {
+			this.broadcastEvent({
+				type: "state_changed",
+				source: "journal",
+				action: "created",
+				key: topic,
+				summary: content.slice(0, 100),
+				timestamp: now,
+			});
+		}
 
 		return id;
 	}
@@ -673,7 +735,53 @@ export class MemoryAgent extends Agent<Env> {
 	// Agent Context & Tools
 	// ==========================================
 
-	/** Get context for sub-agents */
+	/** Build the full context string (used by get_context tool and daemon endpoint) */
+	buildContextString(identityName?: string): string {
+		// If identityName provided, fetch from knowledge; otherwise use core context
+		let identityContent: string | null = null;
+		if (identityName) {
+			const knowledgeIdentity = this.getKnowledge("identity", identityName);
+			identityContent = knowledgeIdentity?.content ?? null;
+		}
+		if (!identityContent) {
+			const coreIdentity = this.getCoreContext("identity");
+			identityContent = coreIdentity?.content ?? null;
+		}
+
+		const human = this.getCoreContext("human");
+		const today = this.getCoreContext("today");
+		const recentJournal = this.getRecentJournal(5);
+		const schedules = this.getSchedules();
+
+		const recent = recentJournal.map((j) => `- [${j.topic}] ${j.content}`).join("\n");
+
+		const scheduleSummary =
+			schedules.length > 0
+				? schedules
+						.map((s) => {
+							const payload = s.payload as { description?: string };
+							return `- ${payload?.description ?? s.id}`;
+						})
+						.join("\n")
+				: "No schedules configured.";
+
+		return `## Identity
+${identityContent ?? "No identity set."}
+
+## Human
+${human?.content ?? "No human profile yet."}
+
+## Today
+${today?.content ?? "No focus set for today."}
+
+## Recent Activity
+${recent || "No recent entries."}
+
+## Active Schedules
+${scheduleSummary}`;
+	}
+
+	/** Get context for sub-agents (shorter version) */
 	private getAgentContext(): string {
 		const identity = this.getCoreContext("identity");
 		const human = this.getCoreContext("human");
@@ -873,6 +981,7 @@ Complete the task using the available tools. Be thorough but concise.`;
 		this.initSchema();
 	}
 
+
 	// ==========================================
 	// MCP Tool Registration
 	// ==========================================
@@ -888,15 +997,9 @@ Complete the task using the available tools. Be thorough but concise.`;
 			{},
 			async () => {
 				const identity = this.getCoreContext("identity");
-				const human = this.getCoreContext("human");
-				const today = this.getCoreContext("today");
-				const recentJournal = this.getRecentJournal(5);
-				const schedules = this.getSchedules();
 
 				// Detect first run
-				const isFirstRun = !identity;
-
-				if (isFirstRun) {
+				if (!identity) {
 					return {
 						content: [
 							{
@@ -967,36 +1070,11 @@ Then you're ready to help.`,
 				}
 
 				// Normal context response
-				const recent = recentJournal.map((j) => `- [${j.topic}] ${j.content}`).join("\n");
-
-				const scheduleSummary =
-					schedules.length > 0
-						? schedules
-								.map((s) => {
-									const payload = s.payload as { description?: string };
-									return `- ${payload?.description ?? s.id}`;
-								})
-								.join("\n")
-						: "No schedules configured.";
-
 				return {
 					content: [
 						{
 							type: "text",
-							text: `## Identity
-${identity?.content ?? "No identity set."}
-
-## Human
-${human?.content ?? "No human profile yet."}
-
-## Today
-${today?.content ?? "No focus set for today."}
-
-## Recent Activity
-${recent || "No recent entries."}
-
-## Active Schedules
-${scheduleSummary}`,
+							text: this.buildContextString(),
 						},
 					],
 				};

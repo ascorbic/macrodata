@@ -12,7 +12,7 @@ import { Hono } from "hono";
 import { html, raw } from "hono/html";
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Google, GitHub, generateState, generateCodeVerifier } from "arctic";
-import { getAgentByName } from "agents";
+import { getAgentByName, routeAgentRequest } from "agents";
 import { MemoryAgent } from "./mcp-agent";
 
 // Re-export classes for wrangler
@@ -741,6 +741,47 @@ apiApp.all("/mcp/*", async (c) => {
 	return agent.onMcpRequest(c.req.raw);
 });
 
+// Context endpoint - returns current state for daemon/hooks
+// Accepts ?identity=name to use a named identity from knowledge
+apiApp.get("/context", async (c) => {
+	const props = c.get("props");
+	if (!props) return c.text("Unauthorized", 401);
+
+	const identityName = c.req.query("identity");
+	const agent = await getAgentByName<Env, MemoryAgent>(c.env.MCP_OBJECT, props.email);
+	const context = await agent.buildContextString(identityName);
+
+	return c.text(context);
+});
+
+// WebSocket endpoint for real-time state updates
+apiApp.get("/ws", async (c) => {
+	const props = c.get("props");
+	if (!props) return c.text("Unauthorized", 401);
+
+	const upgradeHeader = c.req.header("Upgrade");
+	if (!upgradeHeader || upgradeHeader !== "websocket") {
+		return c.text("Expected WebSocket upgrade", 426);
+	}
+
+	console.log(`[WS] WebSocket upgrade request from: ${props.email}`);
+
+	// Get DO stub directly
+	const id = c.env.MCP_OBJECT.idFromName(props.email);
+	const stub = c.env.MCP_OBJECT.get(id);
+
+	// Create request with partyserver headers
+	const headers = new Headers(c.req.raw.headers);
+	headers.set("x-partykit-namespace", "MCP_OBJECT");
+	headers.set("x-partykit-room", props.email);
+
+	const wsRequest = new Request("https://internal/ws", {
+		headers,
+	});
+
+	return stub.fetch(wsRequest);
+});
+
 // API handler converts Hono app to worker handler
 const mcpApiHandler = {
 	async fetch(request: Request, env: unknown, ctx: unknown): Promise<Response> {
@@ -768,7 +809,7 @@ const mcpApiHandler = {
 // ==========================================
 
 const oauthProvider = new OAuthProvider({
-	apiRoute: ["/mcp", "/settings"],
+	apiRoute: ["/mcp", "/settings", "/ws", "/context"],
 	apiHandler: mcpApiHandler,
 	defaultHandler,
 	authorizeEndpoint: "/authorize",

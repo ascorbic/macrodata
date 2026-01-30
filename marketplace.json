@@ -1,0 +1,18 @@
+{
+  "name": "macrodata",
+  "owner": {
+    "name": "Matt Kane",
+    "url": "https://mk.gg"
+  },
+  "metadata": {
+    "description": "Macrodata cloud memory for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "macrodata",
+      "source": "./plugin",
+      "description": "Real-time cloud memory for Claude Code. Streams context updates via WebSocket.",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -160,3 +160,17 @@ export interface McpTool {
 	description?: string;
 	inputSchema?: Record<string, unknown>;
 }
+
+// ==========================================
+// WebSocket Event Types
+// ==========================================
+
+/** Event sent to WebSocket subscribers when state changes */
+export type StateEvent = {
+	type: "state_changed";
+	source: "core" | "knowledge" | "journal" | "schedule";
+	action: "created" | "updated" | "deleted";
+	key: string;
+	summary?: string;
+	timestamp: string;
+};

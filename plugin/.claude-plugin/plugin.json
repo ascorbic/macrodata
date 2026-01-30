@@ -1,0 +1,13 @@
+{
+  "name": "macrodata",
+  "version": "0.1.0",
+  "description": "Real-time cloud memory for Claude Code. Streams context updates via WebSocket and injects state into sessions.",
+  "author": {
+    "name": "Matt Kane",
+    "url": "https://mk.gg"
+  },
+  "repository": "https://github.com/ascorbic/macrodata",
+  "license": "MIT",
+  "keywords": ["memory", "context", "mcp"],
+  "hooks": "./hooks/hooks.json"
+}

@@ -27,13 +27,30 @@ If they choose a non-default location, note that they'll need to set `MACRODATA_
 
 ### Phase 2: Human Profile
 
-Gather information about the user:
+Gather information about the user. Start by detecting what you can from the system:
 
-**Basics:**
-- What should I call you?
-- What's your GitHub username?
-- Bluesky handle? (optional)
-- Other socials or ways to reach you?
+**Auto-detect from system:**
+```bash
+# Get system username and full name
+whoami
+id -F 2>/dev/null || getent passwd $(whoami) | cut -d: -f5 | cut -d, -f1
+
+# Timezone
+cat /etc/timezone 2>/dev/null || readlink /etc/localtime | sed 's|.*/zoneinfo/||'
+
+# Git config (name, email)
+git config --global user.name
+git config --global user.email
+
+# GitHub CLI (if authenticated)
+gh api user --jq '.login, .name, .blog' 2>/dev/null
+```
+
+**Ask the basics:**
+- What should I call you? (confirm or correct auto-detected name)
+- What's your GitHub username? (if not detected from gh cli)
+- Do you have a website or blog?
+- Any social profiles you'd like me to know about?
 
 **Communication style:**
 If they consent, analyze their Claude Code session history (`~/.claude/projects/`):
@@ -49,10 +66,23 @@ Look for patterns:
 - Message length (short/direct vs detailed)
 - Tone (casual, formal, technical)
 - How they give feedback (direct corrections, suggestions, questions)
-- British vs American spelling
+- Language preferences (spelling variants, idioms)
+
+**Current work context:**
+Analyze recent session history to understand what they're working on:
+
+```bash
+# Get recent project directories from Claude Code history
+ls -lt ~/.claude/projects/ | head -10
+
+# Sample recent conversations for context
+find ~/.claude/projects -name "*.jsonl" -mtime -7 -exec cat {} \; 2>/dev/null | \
+  jq -r 'select(.type == "human") | .message.content' 2>/dev/null | \
+  head -100
+```
 
 **Working patterns:**
-- What are you currently working on?
+- Ask about current focus areas (or confirm what you detected)
 - Any preferences for how the agent should work?
 
 Write findings to `state/human.md`:
@@ -63,7 +93,9 @@ Write findings to `state/human.md`:
 ## Basics
 - **Name:** [name]
 - **GitHub:** [username]
-- **Bluesky:** [handle]
+- **Website:** [url if provided]
+- **Socials:** [any provided]
+- **Timezone:** [detected]
 
 ## Communication Style
 - [observed patterns from analysis]
@@ -72,6 +104,9 @@ Write findings to `state/human.md`:
 ## Working Patterns
 - [current focus areas]
 - [preferences]
+
+## Current Projects
+- [detected from recent sessions]
 
 ## Pending Items
 - [empty initially]
@@ -161,9 +196,14 @@ find ~/.claude/projects -name "*.jsonl" -exec cat {} \; 2>/dev/null | \
 - Greeting patterns (casual vs formal)
 - How they give corrections ("no" vs "actually" vs questions)
 - Technical depth (jargon usage)
-- British vs American English
+- Language patterns (spelling, idioms, formality)
 
 Summarize only actionable patterns for the human profile.
+
+**Context to extract:**
+- Recent project directories they've been working in
+- Common file types and technologies
+- Recurring themes or topics
 
 ## Example Conversation
 
@@ -180,21 +220,21 @@ First, where would you like me to store your memory files?
 
 **User:** Matt
 
-**Agent:** Nice to meet you, Matt. What's your GitHub username?
+**Agent:** I can see from your system that you're [name from git config], GitHub username [from gh cli], and you're in the [timezone] timezone. Is that right?
 
-**User:** ascorbic
+**User:** Yeah
 
-**Agent:** And a Bluesky handle, if you have one?
+**Agent:** Do you have a website or any social profiles you'd like me to know about?
 
-**User:** mk.gg
+**User:** My blog is example.com
 
-**Agent:** Great. Would you like me to analyze your Claude Code session history to understand your communication style? I'll look at things like message length, tone, and how you prefer to give feedback. This stays completely local.
+**Agent:** Got it. Would you like me to analyze your Claude Code session history to understand your communication style and what you've been working on? I'll look at things like how you communicate and recent projects. This stays completely local.
 
 **User:** Sure
 
 **Agent:** [runs analysis, summarizes findings]
 
-Looking at your history, I can see you communicate in short, direct messages (median 67 chars), use British English, and give quick acknowledgments ("ok", "yeah"). You tend to ask questions before committing to an approach, and corrections are direct. I'll keep that in mind.
+Looking at your history, I can see you communicate in short, direct messages, give quick acknowledgments, and tend to ask questions before committing to an approach. You've been working on [detected projects] recently.
 
 Now, what would you like to call your agent?
 

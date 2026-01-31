@@ -54,42 +54,52 @@ inject_static_context() {
     local INBOX="$STATE_ROOT/state/inbox.md"
     local TODAY="$STATE_ROOT/state/today.md"
     local COMMITMENTS="$STATE_ROOT/state/commitments.md"
+    local CONTEXT_FILE="$STATE_ROOT/.claude-context.md"
+
+    # Build context content
+    local CONTEXT=""
 
     # Check if this is first run (no identity file)
     if [ ! -f "$IDENTITY" ]; then
-        echo "<macrodata-local>"
-        echo "## First Run"
-        echo ""
-        echo "Macrodata local memory is not yet configured. Run \`get_context\` to set up your memory."
-        echo ""
-        echo "State directory: $STATE_ROOT"
-        echo "</macrodata-local>"
-        return
+        CONTEXT="<macrodata-local>
+## First Run
+
+Macrodata local memory is not yet configured. Run \`get_context\` to set up your memory.
+
+State directory: $STATE_ROOT
+</macrodata-local>"
+    else
+        CONTEXT="<macrodata-local>
+## Identity
+
+$(cat "$IDENTITY" 2>/dev/null || echo "_No identity configured_")
+
+## State
+
+### Inbox
+$(cat "$INBOX" 2>/dev/null || echo "_Empty_")
+
+### Today
+$(cat "$TODAY" 2>/dev/null || echo "_Empty_")
+
+### Commitments
+$(cat "$COMMITMENTS" 2>/dev/null || echo "_Empty_")
+
+## Paths
+
+- Root: \`$STATE_ROOT\`
+- State: \`$STATE_ROOT/state\`
+- Entities: \`$STATE_ROOT/entities\`
+- Journal: \`$STATE_ROOT/journal\`
+</macrodata-local>"
     fi
 
-    echo "<macrodata-local>"
-    echo "## Identity"
-    echo ""
-    cat "$IDENTITY" 2>/dev/null || echo "_No identity configured_"
-    echo ""
-    echo "## State"
-    echo ""
-    echo "### Inbox"
-    cat "$INBOX" 2>/dev/null || echo "_Empty_"
-    echo ""
-    echo "### Today"
-    cat "$TODAY" 2>/dev/null || echo "_Empty_"
-    echo ""
-    echo "### Commitments"
-    cat "$COMMITMENTS" 2>/dev/null || echo "_Empty_"
-    echo ""
-    echo "## Paths"
-    echo ""
-    echo "- Root: \`$STATE_ROOT\`"
-    echo "- State: \`$STATE_ROOT/state\`"
-    echo "- Entities: \`$STATE_ROOT/entities\`"
-    echo "- Journal: \`$STATE_ROOT/journal\`"
-    echo "</macrodata-local>"
+    # Write to file for global CLAUDE.md reference
+    mkdir -p "$STATE_ROOT"
+    echo "$CONTEXT" > "$CONTEXT_FILE"
+
+    # Also output to stdout for session context
+    echo "$CONTEXT"
 }
 
 case "$1" in

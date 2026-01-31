@@ -273,6 +273,28 @@ This means the agent can use Claude Code's FS tools to create/edit entity files,
 - `embeddings.db` – SQLite database with vectors
 - `metadata.json` – index version, model info
 
+## Context Injection
+
+The plugin injects context at two levels:
+
+### 1. Global CLAUDE.md Reference
+
+On `SessionStart`, the hook writes the full context to `~/.config/macrodata/.claude-context.md`. This file should be referenced from your global `~/.claude/CLAUDE.md`:
+
+```markdown
+# My Global CLAUDE.md
+
+@~/.config/macrodata/.claude-context.md
+```
+
+This uses Claude Code's `@path/to/file` import syntax. The context is loaded as part of the system prompt, making it available before any tool calls.
+
+### 2. Session Hook Output
+
+The same context is also output to stdout by the hook, which Claude Code injects into the conversation. This provides redundancy and ensures the context is present even if CLAUDE.md isn't configured.
+
+The context file (`.claude-context.md`) is regenerated on every session start, so it always reflects the current state of identity, inbox, today, and commitments.
+
 ## Setup Flow
 
 On first run (`isFirstRun: true`), the agent should:

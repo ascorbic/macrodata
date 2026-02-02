@@ -797,7 +797,6 @@ ${scheduleSummary}`;
 
 	/** Create tools for sub-agent use with AI SDK */
 	private createAgentTools() {
-		const self = this;
 		return {
 			write_core: tool({
 				description: "Update core context (identity, today, or human profile)",
@@ -806,7 +805,7 @@ ${scheduleSummary}`;
 					content: z.string().describe("Content to write"),
 				}),
 				execute: async ({ which, content }) => {
-					await self.saveCoreContext(which, content);
+					await this.saveCoreContext(which, content);
 					return `Updated ${which}`;
 				},
 			}),
@@ -819,7 +818,7 @@ ${scheduleSummary}`;
 					tags: z.array(z.string()).optional().describe("Optional tags"),
 				}),
 				execute: async ({ type, name, content, tags }) => {
-					await self.saveKnowledge(type, name, content, tags);
+					await this.saveKnowledge(type, name, content, tags);
 					return `Saved ${type}/${name}`;
 				},
 			}),
@@ -830,7 +829,7 @@ ${scheduleSummary}`;
 					name: z.string().describe("Entry name"),
 				}),
 				execute: async ({ type, name }) => {
-					const row = self.getKnowledge(type, name);
+					const row = this.getKnowledge(type, name);
 					return row ? row.content : `Not found: ${type}/${name}`;
 				},
 			}),
@@ -842,7 +841,7 @@ ${scheduleSummary}`;
 					intent: z.string().optional().describe("Why you're logging this"),
 				}),
 				execute: async ({ topic, content, intent }) => {
-					await self.saveJournal(topic, content, intent);
+					await this.saveJournal(topic, content, intent);
 					return `Observation recorded: ${topic}`;
 				},
 			}),
@@ -855,7 +854,7 @@ ${scheduleSummary}`;
 					limit: z.number().optional().default(10),
 				}),
 				execute: async ({ query, type, knowledgeType, limit }) => {
-					const { results } = await self.queryMemory({ query, type, knowledgeType, limit });
+					const { results } = await this.queryMemory({ query, type, knowledgeType, limit });
 					if (results.length === 0) return "No relevant memories found.";
 					return results
 						.map((r) => `[${r.type}${r.subtype ? `:${r.subtype}` : ""}] ${r.topic ?? r.name ?? ""}: ${r.content}`)
@@ -868,7 +867,7 @@ ${scheduleSummary}`;
 					type: z.string().optional().describe("Filter by knowledge type"),
 				}),
 				execute: async ({ type }) => {
-					const rows = type ? self.getKnowledgeByType(type) : self.getAllKnowledge();
+					const rows = type ? this.getKnowledgeByType(type) : this.getAllKnowledge();
 					if (rows.length === 0) return type ? `No ${type} entries yet.` : "No knowledge yet.";
 					return rows.map((r) => `- ${r.type}/${r.name}`).join("\n");
 				},
@@ -881,7 +880,7 @@ ${scheduleSummary}`;
 					count: z.number().optional().default(5),
 				}),
 				execute: async ({ query, type, count }) => {
-					const apiKey = self.env.BRAVE_SEARCH_API_KEY;
+					const apiKey = this.env.BRAVE_SEARCH_API_KEY;
 					if (!apiKey) return "Error: BRAVE_SEARCH_API_KEY not configured";
 					try {
 						const results =
@@ -899,7 +898,7 @@ ${scheduleSummary}`;
 				description: "List all connected external MCP servers",
 				inputSchema: z.object({}),
 				execute: async () => {
-					const mcps = await self.getConnectedMcps();
+					const mcps = await this.getConnectedMcps();
 					if (mcps.length === 0) return "No external MCPs connected.";
 					return mcps.map((m) => `- ${m.name}: ${m.endpoint}`).join("\n");
 				},
@@ -910,11 +909,11 @@ ${scheduleSummary}`;
 					mcpName: z.string().describe("Name of the connected MCP"),
 				}),
 				execute: async ({ mcpName }) => {
-					const mcps = await self.getConnectedMcps();
+					const mcps = await this.getConnectedMcps();
 					const mcp = mcps.find((m) => m.name === mcpName);
 					if (!mcp) return `MCP "${mcpName}" not found.`;
 					try {
-						const tools = await self.fetchMcpTools(mcp);
+						const tools = await this.fetchMcpTools(mcp);
 						if (tools.length === 0) return `No tools available from ${mcpName}.`;
 						return tools.map((t) => `- ${t.name}: ${t.description || "(no description)"}`).join("\n");
 					} catch (error) {
@@ -930,11 +929,11 @@ ${scheduleSummary}`;
 					args: z.record(z.string(), z.unknown()).optional().describe("Arguments to pass to the tool"),
 				}),
 				execute: async ({ mcpName, toolName, args }) => {
-					const mcps = await self.getConnectedMcps();
+					const mcps = await this.getConnectedMcps();
 					const mcp = mcps.find((m) => m.name === mcpName);
 					if (!mcp) return `MCP "${mcpName}" not found.`;
 					try {
-						return await self.callMcpTool(mcp, toolName, args ?? {});
+						return await this.callMcpTool(mcp, toolName, args ?? {});
 					} catch (error) {
 						return `Error: ${error instanceof Error ? error.message : String(error)}`;
 					}
@@ -1096,6 +1095,25 @@ Then you're ready to help.`,
 			},
 		);
 
+		server.tool(
+			"read_core",
+			"Read a single core context file.",
+			{
+				which: z.enum(["identity", "today", "human"]).describe("Which core context to read"),
+			},
+			async ({ which }) => {
+				const row = this.getCoreContext(which);
+				if (!row) {
+					return {
+						content: [{ type: "text", text: `No ${which} set yet.` }],
+					};
+				}
+				return {
+					content: [{ type: "text", text: row.content }],
+				};
+			},
+		);
+
 		// ==========================================
 		// Knowledge Tools (5)
 		// ==========================================
@@ -1234,6 +1252,38 @@ Then you're ready to help.`,
 		);
 
 		server.tool(
+			"get_recent_journal",
+			"Retrieve recent journal entries. Useful for reviewing recent activity without semantic search.",
+			{
+				limit: z.number().optional().default(20).describe("Number of entries to return (max 100)"),
+				topic: z.string().optional().describe("Filter by specific topic"),
+			},
+			async ({ limit, topic }) => {
+				const entries = topic
+					? this.getJournalByTopic(topic, Math.min(limit, 100))
+					: this.getRecentJournal(Math.min(limit, 100));
+
+				if (entries.length === 0) {
+					return {
+						content: [{ type: "text", text: topic ? `No journal entries for topic "${topic}"` : "No journal entries yet." }],
+					};
+				}
+
+				const formatted = entries.map((e) => ({
+					id: e.id,
+					topic: e.topic,
+					content: e.content,
+					intent: e.intent ?? undefined,
+					timestamp: e.timestamp,
+				}));
+
+				return {
+					content: [{ type: "text", text: JSON.stringify({ entries: formatted }, null, 2) }],
+				};
+			},
+		);
+
+		server.tool(
 			"save_summary",
 			"Save a summary of the current conversation for context recovery in future sessions.",
 			{
@@ -1263,6 +1313,47 @@ Then you're ready to help.`,
 
 				return {
 					content: [{ type: "text", text: "Conversation summary saved." }],
+				};
+			},
+		);
+
+		server.tool(
+			"get_recent_summaries",
+			"Retrieve recent conversation summaries for context recovery.",
+			{
+				limit: z.number().optional().default(7).describe("Number of summaries to return"),
+			},
+			async ({ limit }) => {
+				// Summaries are stored in Vectorize only, query with a neutral embedding
+				// and filter by type=summary, sorted by timestamp
+				const embedding = await this.getEmbedding("conversation summary session context");
+
+				const results = await this.env.VECTORIZE.query(embedding, {
+					topK: Math.min(limit, 50),
+					returnMetadata: "all",
+					filter: { type: { $eq: "summary" } },
+				});
+
+				if (results.matches.length === 0) {
+					return {
+						content: [{ type: "text", text: "No conversation summaries yet." }],
+					};
+				}
+
+				// Sort by timestamp descending
+				const sorted = results.matches
+					.map((m) => {
+						const meta = m.metadata as Record<string, unknown>;
+						return {
+							id: m.id,
+							content: String(meta.content ?? ""),
+							timestamp: new Date(Number(meta.timestamp ?? 0)).toISOString(),
+						};
+					})
+					.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+				return {
+					content: [{ type: "text", text: JSON.stringify({ summaries: sorted }, null, 2) }],
 				};
 			},
 		);

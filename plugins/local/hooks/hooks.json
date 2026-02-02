@@ -19,6 +19,48 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Context is about to be compacted. Before this happens, save what's important.\n\nUse save_conversation_summary to capture:\n- What was accomplished in this session\n- Key decisions made\n- Any open threads that need follow-up\n- Patterns learned about the user\n\nBe concise but thorough. This summary will help recover context in future sessions.\n\nContext being compacted:\n$ARGUMENTS",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Session is ending. If significant work was done, save a conversation summary.\n\nUse save_conversation_summary if this session involved:\n- Problem solving or debugging\n- Learning something new\n- Making decisions\n- Completing meaningful tasks\n\nSkip if this was just a quick question or trivial interaction.\n\nSession context:\n$ARGUMENTS",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/macrodata-hook.sh post-bash"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/macrodata-hook.sh post-file-change"
+          }
+        ]
+      }
     ]
   }
 }

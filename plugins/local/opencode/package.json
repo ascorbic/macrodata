@@ -1,0 +1,53 @@
+{
+  "name": "opencode-macrodata",
+  "version": "0.1.0",
+  "description": "Persistent local memory for OpenCode agents - journal, search, reminders, and context injection",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "bun build ./index.ts --outdir ./dist --target node && tsc --emitDeclarationOnly",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "memory",
+    "ai",
+    "coding-agent",
+    "local",
+    "journal",
+    "semantic-search"
+  ],
+  "author": "Matt Kane",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ascorbic/macrodata",
+    "directory": "plugins/local/opencode"
+  },
+  "homepage": "https://github.com/ascorbic/macrodata#readme",
+  "bugs": {
+    "url": "https://github.com/ascorbic/macrodata/issues"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.0.162"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.3"
+  },
+  "opencode": {
+    "type": "plugin",
+    "hooks": [
+      "chat.message",
+      "experimental.session.compacting",
+      "tool.execute.before"
+    ]
+  },
+  "files": [
+    "dist"
+  ]
+}

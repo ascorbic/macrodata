@@ -10,9 +10,9 @@
  */
 
 import { LocalIndex } from "vectra";
-import { join } from "path";
+import { join, basename } from "path";
 import { readFileSync, readdirSync, existsSync, mkdirSync } from "fs";
-import { embed, embedBatch } from "./embeddings.js";
+import { embed, embedBatch, preloadModel as preloadEmbeddings } from "./embeddings.js";
 import { homedir } from "os";
 
 // Configuration
@@ -313,4 +313,73 @@ export async function getIndexStats(): Promise<{ itemCount: number }> {
   const idx = await getIndex();
   const items = await idx.listItems();
   return { itemCount: items.length };
+}
+
+/**
+ * Index a single entity file (person or project)
+ * Called by daemon when files change
+ */
+export async function indexEntityFile(filePath: string): Promise<void> {
+  const filename = basename(filePath, ".md");
+  
+  // Determine type from path
+  let type: MemoryItemType;
+  if (filePath.includes("/people/")) {
+    type = "person";
+  } else if (filePath.includes("/projects/")) {
+    type = "project";
+  } else {
+    console.error(`[Indexer] Unknown entity type for: ${filePath}`);
+    return;
+  }
+
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    const items: MemoryItem[] = [];
+    const subdir = type === "person" ? "people" : "projects";
+
+    // Split by ## headers for section-level indexing
+    const sections = content.split(/^## /m);
+
+    // Preamble (before any ##)
+    if (sections[0].trim()) {
+      items.push({
+        id: `${type}-${filename}-preamble`,
+        type,
+        content: sections[0].trim(),
+        source: `${subdir}/${basename(filePath)}`,
+        section: "preamble",
+      });
+    }
+
+    // Each section
+    for (let i = 1; i < sections.length; i++) {
+      const section = sections[i];
+      const firstLine = section.split("\n")[0];
+      const sectionTitle = firstLine.trim();
+      const sectionContent = section.slice(firstLine.length).trim();
+
+      if (sectionContent) {
+        items.push({
+          id: `${type}-${filename}-${i}`,
+          type,
+          content: `## ${sectionTitle}\n\n${sectionContent}`,
+          source: `${subdir}/${basename(filePath)}`,
+          section: sectionTitle,
+        });
+      }
+    }
+
+    await indexItems(items);
+    console.error(`[Indexer] Indexed ${items.length} sections from ${basename(filePath)}`);
+  } catch (err) {
+    console.error(`[Indexer] Failed to index ${filePath}: ${err}`);
+  }
+}
+
+/**
+ * Preload the embedding model (call during startup)
+ */
+export async function preloadModel(): Promise<void> {
+  await preloadEmbeddings();
 }

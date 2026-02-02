@@ -12,8 +12,9 @@
 import { watch } from "chokidar";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
 import { homedir } from "os";
-import { join, basename } from "path";
+import { join, basename, relative } from "path";
 import { Cron } from "croner";
+import { indexEntityFile, preloadModel } from "../src/indexer.js";
 
 // Configuration
 const STATE_ROOT = process.env.MACRODATA_ROOT || join(homedir(), ".config", "macrodata");
@@ -95,6 +96,11 @@ class MacrodataLocalDaemon {
     // Set up signal handlers
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
+
+    // Preload embedding model in background (don't block startup)
+    preloadModel()
+      .then(() => log("Embedding model preloaded"))
+      .catch((err) => log(`Failed to preload embedding model: ${err}`));
 
     // Load and start schedules
     this.loadAndStartSchedules();
@@ -234,10 +240,13 @@ class MacrodataLocalDaemon {
     this.reindexQueue.clear();
 
     log(`Reindexing ${paths.length} file(s)`);
-    // TODO: Actually reindex these files
-    // For now, just log
     for (const path of paths) {
-      log(`  - ${basename(path)}`);
+      try {
+        await indexEntityFile(path);
+        log(`  ✓ ${basename(path)}`);
+      } catch (err) {
+        log(`  ✗ ${basename(path)}: ${err}`);
+      }
     }
   }
 

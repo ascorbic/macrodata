@@ -2,17 +2,17 @@
  * Macrodata Local MCP Server
  *
  * Provides tools for local file-based memory:
- * - get_context: Session bootstrap
  * - log_journal: Append timestamped entries (with auto-indexing)
  * - get_recent_journal: Get recent entries
- * - log_signal: Raw event logging for later analysis
  * - search_memory: Semantic search using Transformers.js
- * - rebuild_memory_index: Rebuild the search index
- * - get_memory_index_stats: Index statistics
- * - schedule_reminder: Cron-based reminders
- * - schedule_once: One-shot reminders
+ * - manage_index: Rebuild or get stats for memory/conversation indexes
+ * - schedule: Create cron or one-shot reminders
  * - list_reminders: List active schedules
  * - remove_reminder: Delete a reminder
+ * - save_conversation_summary: Save session summaries
+ * - get_recent_summaries: Get past summaries
+ * - search_conversations: Search past Claude Code sessions
+ * - expand_conversation: Load full context from a session
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -38,7 +38,6 @@ import {
   getStateDir,
   getEntitiesDir,
   getJournalDir,
-  getSignalsDir,
   getIndexDir,
   getSchedulesFile,
 } from "./config.js";
@@ -65,17 +64,6 @@ interface Schedule {
   createdAt: string;
 }
 
-interface Signal {
-  timestamp: string;
-  type: string;
-  context?: {
-    file?: string;
-    query?: string;
-    trigger?: string;
-  };
-  raw?: unknown;
-}
-
 interface ScheduleStore {
   schedules: Schedule[];
 }
@@ -90,7 +78,6 @@ function ensureDirectories() {
     join(entitiesDir, "people"),
     join(entitiesDir, "projects"),
     getJournalDir(),
-    getSignalsDir(),
     getIndexDir(),
   ];
   for (const dir of dirs) {
@@ -169,33 +156,6 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
-// Tool: get_context
-// NOTE: Context is auto-injected by SessionStart hook. This tool is rarely needed.
-server.tool(
-  "get_context",
-  "Get macrodata paths. Context is auto-injected by hooks - only use this if you need path references.",
-  {},
-  async () => {
-    ensureDirectories();
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify({
-            paths: {
-              root: getStateRoot(),
-              state: getStateDir(),
-              entities: getEntitiesDir(),
-              journal: getJournalDir(),
-            },
-          }, null, 2),
-        },
-      ],
-    };
-  }
-);
-
 // Tool: log_journal
 server.tool(
   "log_journal",
@@ -268,52 +228,6 @@ server.tool(
   }
 );
 
-// Tool: log_signal
-server.tool(
-  "log_signal",
-  "Log a raw event for later analysis. Signals are not indexed for search - they capture events that might matter later.",
-  {
-    type: z.string().describe("Event type (e.g., file_edit, search, reminder_fired)"),
-    file: z.string().optional().describe("File involved, if any"),
-    query: z.string().optional().describe("Search query, if relevant"),
-    trigger: z.string().optional().describe("What triggered this event"),
-    raw: z.any().optional().describe("Arbitrary data for future analysis"),
-  },
-  async ({ type, file, query, trigger, raw }) => {
-    ensureDirectories();
-
-    const signal: Signal = {
-      timestamp: new Date().toISOString(),
-      type,
-    };
-
-    if (file || query || trigger) {
-      signal.context = {
-        ...(file && { file }),
-        ...(query && { query }),
-        ...(trigger && { trigger }),
-      };
-    }
-
-    if (raw !== undefined) {
-      signal.raw = raw;
-    }
-
-    const today = new Date().toISOString().split("T")[0];
-    const signalPath = join(getSignalsDir(), `${today}.jsonl`);
-    appendFileSync(signalPath, JSON.stringify(signal) + "\n");
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Logged signal: ${type}`,
-        },
-      ],
-    };
-  }
-);
-
 // Tool: search_memory
 server.tool(
   "search_memory",
@@ -374,78 +288,69 @@ server.tool(
   }
 );
 
-// Tool: rebuild_memory_index
+// Tool: manage_index
 server.tool(
-  "rebuild_memory_index",
-  "Rebuild the semantic search index from scratch. Use if index seems stale or corrupted.",
-  {},
-  async () => {
+  "manage_index",
+  "Manage search indexes. Target 'memory' for journal/entities, 'conversations' for past Claude Code sessions.",
+  {
+    target: z.enum(["memory", "conversations"]).describe("Which index to manage"),
+    action: z.enum(["rebuild", "stats"]).describe("'rebuild' to reindex from scratch, 'stats' to get counts"),
+  },
+  async ({ target, action }) => {
     try {
-      const result = await rebuildIndex();
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Index rebuilt successfully. Indexed ${result.itemCount} items.`,
-          },
-        ],
-      };
+      if (target === "memory") {
+        if (action === "rebuild") {
+          const result = await rebuildIndex();
+          return {
+            content: [{ type: "text" as const, text: `Memory index rebuilt. Indexed ${result.itemCount} items.` }],
+          };
+        } else {
+          const stats = await getIndexStats();
+          return {
+            content: [{ type: "text" as const, text: `Memory index contains ${stats.itemCount} items.` }],
+          };
+        }
+      } else {
+        if (action === "rebuild") {
+          const result = await rebuildConversationIndex();
+          return {
+            content: [{ type: "text" as const, text: `Conversation index rebuilt. Indexed ${result.exchangeCount} exchanges.` }],
+          };
+        } else {
+          const stats = await getConversationIndexStats();
+          return {
+            content: [{ type: "text" as const, text: `Conversation index contains ${stats.exchangeCount} exchanges.` }],
+          };
+        }
+      }
     } catch (err) {
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Failed to rebuild index: ${err}`,
-          },
-        ],
+        content: [{ type: "text" as const, text: `Failed to ${action} ${target} index: ${err}` }],
       };
     }
   }
 );
 
-// Tool: get_memory_index_stats
-server.tool("get_memory_index_stats", "Get statistics about the memory index", {}, async () => {
-  try {
-    const stats = await getIndexStats();
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Index contains ${stats.itemCount} items.`,
-        },
-      ],
-    };
-  } catch (err) {
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Failed to get index stats: ${err}`,
-        },
-      ],
-    };
-  }
-});
-
-// Tool: schedule_reminder
+// Tool: schedule
 server.tool(
-  "schedule_reminder",
-  "Create a recurring reminder using cron syntax. The daemon will trigger Claude Code when it fires.",
+  "schedule",
+  "Create a reminder. Use type 'cron' for recurring (expression is cron syntax) or 'once' for one-shot (expression is ISO datetime).",
   {
+    type: z.enum(["cron", "once"]).describe("'cron' for recurring, 'once' for one-shot"),
     id: z.string().describe("Unique identifier for this reminder"),
-    cronExpression: z.string().describe("Cron expression (e.g., '0 9 * * *' for 9am daily)"),
+    expression: z.string().describe("Cron expression (e.g., '0 9 * * *') or ISO datetime (e.g., '2026-01-31T10:00:00')"),
     description: z.string().describe("What this reminder is for"),
     payload: z.string().describe("Message to process when reminder fires"),
     model: z.string().optional().describe("Model to use (e.g., 'anthropic/claude-opus-4-5' for deep thinking tasks)"),
   },
-  async ({ id, cronExpression, description, payload, model }) => {
+  async ({ type, id, expression, description, payload, model }) => {
     const schedule: Schedule = {
       id,
-      type: "cron",
-      expression: cronExpression,
+      type,
+      expression,
       description,
       payload,
-      agent: "claude", // Hard-coded: MCP server = Claude Code
+      agent: "claude",
       model,
       createdAt: new Date().toISOString(),
     };
@@ -455,52 +360,12 @@ server.tool(
     store.schedules.push(schedule);
     saveSchedules(store);
 
-    // Note: The daemon will pick up the new schedule on its next check
-
+    const typeLabel = type === "cron" ? "recurring" : "one-shot";
     return {
       content: [
         {
           type: "text" as const,
-          text: `Created recurring reminder: ${id} (${cronExpression})${model ? ` with model ${model}` : ""}`,
-        },
-      ],
-    };
-  }
-);
-
-// Tool: schedule_once
-server.tool(
-  "schedule_once",
-  "Create a one-shot reminder at a specific datetime. The daemon will trigger Claude Code when it fires.",
-  {
-    id: z.string().describe("Unique identifier for this reminder"),
-    datetime: z.string().describe("ISO 8601 datetime (e.g., '2026-01-31T10:00:00')"),
-    description: z.string().describe("What this reminder is for"),
-    payload: z.string().describe("Message to process when reminder fires"),
-    model: z.string().optional().describe("Model to use (e.g., 'anthropic/claude-opus-4-5' for deep thinking tasks)"),
-  },
-  async ({ id, datetime, description, payload, model }) => {
-    const schedule: Schedule = {
-      id,
-      type: "once",
-      expression: datetime,
-      description,
-      payload,
-      agent: "claude", // Hard-coded: MCP server = Claude Code
-      model,
-      createdAt: new Date().toISOString(),
-    };
-
-    const store = loadSchedules();
-    store.schedules = store.schedules.filter((s) => s.id !== id);
-    store.schedules.push(schedule);
-    saveSchedules(store);
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Scheduled one-shot reminder: ${id} at ${datetime}${model ? ` with model ${model}` : ""}`,
+          text: `Created ${typeLabel} reminder: ${id} (${expression})${model ? ` with model ${model}` : ""}`,
         },
       ],
     };
@@ -653,7 +518,7 @@ server.tool(
           content: [
             {
               type: "text" as const,
-              text: "No matching conversations found. Try rebuilding the conversation index with rebuild_conversation_index.",
+              text: "No matching conversations found. Try manage_index(target: 'conversations', action: 'rebuild').",
             },
           ],
         };
@@ -745,63 +610,6 @@ server.tool(
   }
 );
 
-// Tool: rebuild_conversation_index
-server.tool(
-  "rebuild_conversation_index",
-  "Rebuild the conversation search index from Claude Code's log files. Run this to index new conversations.",
-  {},
-  async () => {
-    try {
-      const result = await rebuildConversationIndex();
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Conversation index rebuilt. Indexed ${result.exchangeCount} exchanges.`,
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Failed to rebuild conversation index: ${err}`,
-          },
-        ],
-      };
-    }
-  }
-);
-
-// Tool: get_conversation_index_stats
-server.tool(
-  "get_conversation_index_stats",
-  "Get statistics about the conversation search index",
-  {},
-  async () => {
-    try {
-      const stats = await getConversationIndexStats();
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Conversation index contains ${stats.exchangeCount} exchanges.`,
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Failed to get conversation index stats: ${err}`,
-          },
-        ],
-      };
-    }
-  }
-);
 
 // Start server
 async function main() {

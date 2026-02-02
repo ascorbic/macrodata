@@ -7,6 +7,7 @@
 import { existsSync, appendFileSync, mkdirSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { getStateRoot } from "./context.js";
+import { indexJournalEntry } from "./search.js";
 
 interface JournalEntry {
   timestamp: string;
@@ -62,8 +63,12 @@ export async function logJournal(
   const journalPath = getTodayJournalPath();
   appendFileSync(journalPath, JSON.stringify(entry) + "\n");
 
-  // Note: We don't index here to keep the plugin lightweight
-  // The MCP server handles indexing via daemon
+  // Index the entry for semantic search
+  try {
+    await indexJournalEntry(entry);
+  } catch (err) {
+    console.error("[Macrodata] Failed to index journal entry:", err);
+  }
 }
 
 /**

@@ -9,7 +9,9 @@ Persistent local memory plugin for [OpenCode](https://opencode.ai) agents.
 - **Context injection** - Identity, today's focus, and recent journal injected on first message
 - **Compaction hook** - Memory context preserved across context compaction
 - **Auto-journaling** - Git commands and file changes logged automatically
-- **Custom tool** - `macrodata` tool for journaling, summaries, reminders, and more
+- **Semantic search** - Vector search over journal, entities, and topics using Transformers.js
+- **Conversation history** - Search past OpenCode sessions
+- **Reminders** - Cron-based scheduling (requires daemon)
 
 ## Installation
 
@@ -50,29 +52,50 @@ $MACRODATA_ROOT/
 ├── entities/
 │   ├── people/          # People as markdown files
 │   └── projects/        # Projects as markdown files
+├── topics/              # Topic files (working knowledge)
 ├── journal/             # JSONL entries by date
-└── .schedules.json      # Scheduled reminders
+├── .schedules.json      # Scheduled reminders
+└── .index/
+    ├── vectors/         # Memory embeddings
+    └── oc-conversations/ # Conversation embeddings
 ```
 
 ## Tool Usage
 
 The plugin provides a `macrodata` tool with these modes:
 
+### Search
+Semantic search over your memory:
+```
+macrodata mode:search query:"authentication patterns"
+macrodata mode:search query:"debugging tips" searchType:journal count:10
+```
+
+### Search Conversations
+Search past OpenCode sessions:
+```
+macrodata mode:search_conversations query:"fixing TypeScript errors"
+macrodata mode:search_conversations query:"API design" projectOnly:true
+```
+
 ### Journal
+Log observations, decisions, learnings:
 ```
 macrodata mode:journal topic:"debug" content:"Fixed the null pointer issue by..."
 ```
 
 ### Summary
-Save conversation summaries for context recovery:
+Save/retrieve conversation summaries:
 ```
 macrodata mode:summary content:"Implemented auth flow" keyDecisions:["Use JWT"] openThreads:["Add refresh tokens"]
+macrodata mode:summary  # Get recent summaries
 ```
 
 ### Remind
 Schedule reminders (requires daemon running):
 ```
-macrodata mode:remind id:"standup" cronExpression:"0 9 * * 1-5" description:"Daily standup" payload:"Check today.md for priorities"
+macrodata mode:remind id:"standup" cronExpression:"0 9 * * 1-5" description:"Daily standup" payload:"Check today.md"
+macrodata mode:remind id:"standup"  # Remove reminder
 ```
 
 ### Read
@@ -89,6 +112,12 @@ macrodata mode:list listType:"reminders"
 macrodata mode:list listType:"summaries"
 ```
 
+### Rebuild Index
+Rebuild search indexes after manual file changes:
+```
+macrodata mode:rebuild_index
+```
+
 ## How It Differs from Supermemory
 
 | Aspect | opencode-macrodata | opencode-supermemory |
@@ -98,7 +127,17 @@ macrodata mode:list listType:"summaries"
 | **Cost** | Free | API key required |
 | **Memory model** | Structured (journal, entities, topics) | Generic blobs |
 | **Editability** | Human-readable markdown | Opaque |
-| **Reminders** | Cron-based scheduling | None |
+| **Scheduling** | Cron-based reminders | None |
+| **Conversation history** | Indexed and searchable | None |
+| **Search** | Local Transformers.js | Cloud API |
+
+## Hooks
+
+| Hook | Behavior |
+|------|----------|
+| `chat.message` | Inject context on first message |
+| `experimental.session.compacting` | Preserve memory during compaction |
+| `tool.execute.before` | Auto-log git commands and file changes |
 
 ## Development
 
@@ -108,7 +147,7 @@ bun install
 bun run build
 ```
 
-Test locally:
+Test locally by adding to opencode.json:
 ```json
 {
   "plugin": ["file:///path/to/macrodata/plugins/local/opencode"]

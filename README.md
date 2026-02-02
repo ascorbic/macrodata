@@ -148,18 +148,6 @@ macrodata/
 | Sync | Git (optional) | Multi-device |
 | Features | Full | + Web search, background AI |
 
-## Comparison with Alternatives
-
-| Feature | Macrodata | Supermemory |
-|---------|-----------|-------------|
-| Storage | Local files | Cloud API |
-| Privacy | 100% local | Data sent to servers |
-| Cost | Free | API key required |
-| Memory model | Structured (journal, entities, topics) | Generic blobs |
-| Editability | Human-readable markdown | Opaque |
-| Scheduling | Cron-based reminders | None |
-| Conversation history | Indexed and searchable | None |
-
 ## Development
 
 ```bash

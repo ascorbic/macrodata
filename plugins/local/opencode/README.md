@@ -118,19 +118,6 @@ Rebuild search indexes after manual file changes:
 macrodata mode:rebuild_index
 ```
 
-## How It Differs from Supermemory
-
-| Aspect | opencode-macrodata | opencode-supermemory |
-|--------|-------------------|---------------------|
-| **Storage** | Local files + Vectra index | Cloud API |
-| **Privacy** | 100% local | Data sent to servers |
-| **Cost** | Free | API key required |
-| **Memory model** | Structured (journal, entities, topics) | Generic blobs |
-| **Editability** | Human-readable markdown | Opaque |
-| **Scheduling** | Cron-based reminders | None |
-| **Conversation history** | Indexed and searchable | None |
-| **Search** | Local Transformers.js | Cloud API |
-
 ## Hooks
 
 | Hook | Behavior |

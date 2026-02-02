@@ -13,8 +13,17 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DAEMON="$SCRIPT_DIR/macrodata-daemon.ts"
 
-# State directory (configurable via MACRODATA_ROOT, defaults to ~/.config/macrodata)
-STATE_ROOT="${MACRODATA_ROOT:-$HOME/.config/macrodata}"
+# State directory (configurable via MACRODATA_ROOT, config file, or defaults to ~/.config/macrodata)
+DEFAULT_ROOT="$HOME/.config/macrodata"
+CONFIG_FILE="$DEFAULT_ROOT/config.json"
+if [ -n "$MACRODATA_ROOT" ]; then
+    STATE_ROOT="$MACRODATA_ROOT"
+elif [ -f "$CONFIG_FILE" ]; then
+    STATE_ROOT=$(jq -r '.root // empty' "$CONFIG_FILE" 2>/dev/null)
+    STATE_ROOT="${STATE_ROOT:-$DEFAULT_ROOT}"
+else
+    STATE_ROOT="$DEFAULT_ROOT"
+fi
 
 # Output locations
 PIDFILE="$STATE_ROOT/.daemon.pid"

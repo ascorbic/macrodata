@@ -13,13 +13,7 @@ import { LocalIndex } from "vectra";
 import { join, basename } from "path";
 import { readFileSync, readdirSync, existsSync, mkdirSync } from "fs";
 import { embed, embedBatch, preloadModel as preloadEmbeddings } from "./embeddings.js";
-import { homedir } from "os";
-
-// Configuration
-const STATE_ROOT = process.env.MACRODATA_ROOT || join(homedir(), ".config", "macrodata");
-const INDEX_PATH = join(STATE_ROOT, ".index", "vectors");
-const ENTITIES_DIR = join(STATE_ROOT, "entities");
-const JOURNAL_DIR = join(STATE_ROOT, "journal");
+import { getIndexDir, getEntitiesDir, getJournalDir } from "./config.js";
 
 // Item types for filtering
 export type MemoryItemType = "journal" | "person" | "project";
@@ -42,22 +36,33 @@ export interface SearchResult {
   score: number;
 }
 
-// Singleton index instance
+// Cached index instance with path tracking
 let index: LocalIndex | null = null;
+let indexPath: string | null = null;
 
 /**
  * Get or create the vector index
+ * Re-creates if the configured path has changed
  */
 async function getIndex(): Promise<LocalIndex> {
+  const currentIndexDir = getIndexDir();
+  const currentIndexPath = join(currentIndexDir, "vectors");
+
+  // Invalidate cache if path changed
+  if (index && indexPath !== currentIndexPath) {
+    index = null;
+    indexPath = null;
+  }
+
   if (index) return index;
 
   // Ensure index directory exists
-  const indexDir = join(STATE_ROOT, ".index");
-  if (!existsSync(indexDir)) {
-    mkdirSync(indexDir, { recursive: true });
+  if (!existsSync(currentIndexDir)) {
+    mkdirSync(currentIndexDir, { recursive: true });
   }
 
-  index = new LocalIndex(INDEX_PATH);
+  index = new LocalIndex(currentIndexPath);
+  indexPath = currentIndexPath;
 
   // Create if doesn't exist
   if (!(await index.isIndexCreated())) {
@@ -170,14 +175,15 @@ export async function searchMemory(
  */
 function parseJournalForIndexing(): MemoryItem[] {
   const items: MemoryItem[] = [];
+  const journalDir = getJournalDir();
 
-  if (!existsSync(JOURNAL_DIR)) return items;
+  if (!existsSync(journalDir)) return items;
 
-  const files = readdirSync(JOURNAL_DIR).filter((f) => f.endsWith(".jsonl"));
+  const files = readdirSync(journalDir).filter((f) => f.endsWith(".jsonl"));
 
   for (const file of files) {
     try {
-      const content = readFileSync(join(JOURNAL_DIR, file), "utf-8");
+      const content = readFileSync(join(journalDir, file), "utf-8");
       const lines = content.trim().split("\n").filter(Boolean);
 
       for (let i = 0; i < lines.length; i++) {
@@ -207,7 +213,7 @@ function parseJournalForIndexing(): MemoryItem[] {
  */
 function parseEntitiesForIndexing(subdir: "people" | "projects", type: MemoryItemType): MemoryItem[] {
   const items: MemoryItem[] = [];
-  const dir = join(ENTITIES_DIR, subdir);
+  const dir = join(getEntitiesDir(), subdir);
 
   if (!existsSync(dir)) return items;
 

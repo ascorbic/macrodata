@@ -15,20 +15,20 @@
 
 import { watch } from "chokidar";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
-import { homedir } from "os";
 import { join, basename, relative } from "path";
 import { Cron } from "croner";
 import { spawn, spawnSync } from "child_process";
 import { indexEntityFile, preloadModel } from "../src/indexer.js";
+import { getStateRoot, getEntitiesDir, getJournalDir, getIndexDir, getSchedulesFile } from "../src/config.js";
 
-// Configuration
-const STATE_ROOT = process.env.MACRODATA_ROOT || join(homedir(), ".config", "macrodata");
-const PIDFILE = join(STATE_ROOT, ".daemon.pid");
-const PENDING_CONTEXT = join(STATE_ROOT, ".pending-context");
-const SCHEDULES_FILE = join(STATE_ROOT, ".schedules.json");
-const INDEX_DIR = join(STATE_ROOT, ".index");
-const ENTITIES_DIR = join(STATE_ROOT, "entities");
-const JOURNAL_DIR = join(STATE_ROOT, "journal");
+// Daemon-specific path helpers (dynamic)
+function getPidFile() {
+  return join(getStateRoot(), ".daemon.pid");
+}
+
+function getPendingContext() {
+  return join(getStateRoot(), ".pending-context");
+}
 
 interface Schedule {
   id: string;
@@ -116,14 +116,15 @@ function log(message: string) {
 
 function writePendingContext(message: string) {
   try {
-    appendFileSync(PENDING_CONTEXT, message + "\n");
+    appendFileSync(getPendingContext(), message + "\n");
   } catch (err) {
     log(`Failed to write pending context: ${err}`);
   }
 }
 
 function ensureDirectories() {
-  const dirs = [STATE_ROOT, INDEX_DIR, ENTITIES_DIR, JOURNAL_DIR, join(ENTITIES_DIR, "people"), join(ENTITIES_DIR, "projects")];
+  const entitiesDir = getEntitiesDir();
+  const dirs = [getStateRoot(), getIndexDir(), entitiesDir, getJournalDir(), join(entitiesDir, "people"), join(entitiesDir, "projects")];
   for (const dir of dirs) {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
@@ -134,8 +135,9 @@ function ensureDirectories() {
 
 function loadSchedules(): ScheduleStore {
   try {
-    if (existsSync(SCHEDULES_FILE)) {
-      return JSON.parse(readFileSync(SCHEDULES_FILE, "utf-8"));
+    const schedulesFile = getSchedulesFile();
+    if (existsSync(schedulesFile)) {
+      return JSON.parse(readFileSync(schedulesFile, "utf-8"));
     }
   } catch (err) {
     log(`Failed to load schedules: ${err}`);
@@ -145,7 +147,7 @@ function loadSchedules(): ScheduleStore {
 
 function saveSchedules(store: ScheduleStore) {
   try {
-    writeFileSync(SCHEDULES_FILE, JSON.stringify(store, null, 2));
+    writeFileSync(getSchedulesFile(), JSON.stringify(store, null, 2));
   } catch (err) {
     log(`Failed to save schedules: ${err}`);
   }
@@ -158,11 +160,11 @@ class MacrodataLocalDaemon {
 
   async start() {
     log("Starting macrodata local daemon");
-    log(`State root: ${STATE_ROOT}`);
+    log(`State root: ${getStateRoot()}`);
 
     // Write PID file
     ensureDirectories();
-    writeFileSync(PIDFILE, process.pid.toString());
+    writeFileSync(getPidFile(), process.pid.toString());
 
     // Set up signal handlers
     process.on("SIGTERM", () => this.shutdown());
@@ -285,7 +287,8 @@ class MacrodataLocalDaemon {
   }
 
   private startFileWatcher() {
-    const watchPaths = [join(ENTITIES_DIR, "**", "*.md")];
+    const entitiesDir = getEntitiesDir();
+    const watchPaths = [join(entitiesDir, "**", "*.md")];
 
     this.watcher = watch(watchPaths, {
       ignoreInitial: true,
@@ -298,7 +301,7 @@ class MacrodataLocalDaemon {
       this.queueReindex(path);
     });
 
-    log(`Watching for entity changes in: ${ENTITIES_DIR}`);
+    log(`Watching for entity changes in: ${entitiesDir}`);
   }
 
   private reindexQueue: Set<string> = new Set();
@@ -351,10 +354,11 @@ class MacrodataLocalDaemon {
 
     // Clean up PID file
     try {
-      if (existsSync(PIDFILE)) {
-        const pid = readFileSync(PIDFILE, "utf-8").trim();
+      const pidFile = getPidFile();
+      if (existsSync(pidFile)) {
+        const pid = readFileSync(pidFile, "utf-8").trim();
         if (pid === process.pid.toString()) {
-          require("fs").unlinkSync(PIDFILE);
+          require("fs").unlinkSync(pidFile);
         }
       }
     } catch {

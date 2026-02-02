@@ -19,7 +19,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
 import {
   searchMemory as doSearchMemory,
@@ -34,30 +33,15 @@ import {
   rebuildConversationIndex,
   getConversationIndexStats,
 } from "./conversations.js";
-
-// Configuration
-function getStateRoot(): string {
-  // Check for config file first
-  const configPath = join(homedir(), ".claude", "macrodata.json");
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, "utf-8"));
-      if (config.root) return config.root;
-    } catch {
-      // Ignore parse errors
-    }
-  }
-  // Fall back to env var, then default
-  return process.env.MACRODATA_ROOT || join(homedir(), ".config", "macrodata");
-}
-
-const STATE_ROOT = getStateRoot();
-const STATE_DIR = join(STATE_ROOT, "state");
-const ENTITIES_DIR = join(STATE_ROOT, "entities");
-const JOURNAL_DIR = join(STATE_ROOT, "journal");
-const SIGNALS_DIR = join(STATE_ROOT, "signals");
-const INDEX_DIR = join(STATE_ROOT, ".index");
-const SCHEDULES_FILE = join(STATE_ROOT, ".schedules.json");
+import {
+  getStateRoot,
+  getStateDir,
+  getEntitiesDir,
+  getJournalDir,
+  getSignalsDir,
+  getIndexDir,
+  getSchedulesFile,
+} from "./config.js";
 
 // Types
 interface JournalEntry {
@@ -98,15 +82,16 @@ interface ScheduleStore {
 
 // Helpers
 function ensureDirectories() {
+  const entitiesDir = getEntitiesDir();
   const dirs = [
-    STATE_ROOT,
-    STATE_DIR,
-    ENTITIES_DIR,
-    join(ENTITIES_DIR, "people"),
-    join(ENTITIES_DIR, "projects"),
-    JOURNAL_DIR,
-    SIGNALS_DIR,
-    INDEX_DIR,
+    getStateRoot(),
+    getStateDir(),
+    entitiesDir,
+    join(entitiesDir, "people"),
+    join(entitiesDir, "projects"),
+    getJournalDir(),
+    getSignalsDir(),
+    getIndexDir(),
   ];
   for (const dir of dirs) {
     if (!existsSync(dir)) {
@@ -128,8 +113,9 @@ function readFileOrEmpty(path: string): string {
 
 function loadSchedules(): ScheduleStore {
   try {
-    if (existsSync(SCHEDULES_FILE)) {
-      return JSON.parse(readFileSync(SCHEDULES_FILE, "utf-8"));
+    const schedulesFile = getSchedulesFile();
+    if (existsSync(schedulesFile)) {
+      return JSON.parse(readFileSync(schedulesFile, "utf-8"));
     }
   } catch {
     // Ignore
@@ -138,21 +124,22 @@ function loadSchedules(): ScheduleStore {
 }
 
 function saveSchedules(store: ScheduleStore) {
-  writeFileSync(SCHEDULES_FILE, JSON.stringify(store, null, 2));
+  writeFileSync(getSchedulesFile(), JSON.stringify(store, null, 2));
 }
 
 function getTodayJournalPath(): string {
   const today = new Date().toISOString().split("T")[0];
-  return join(JOURNAL_DIR, `${today}.jsonl`);
+  return join(getJournalDir(), `${today}.jsonl`);
 }
 
 function getRecentJournalEntries(count: number): JournalEntry[] {
   const entries: JournalEntry[] = [];
+  const journalDir = getJournalDir();
 
   // Get all journal files, sorted by name (date) descending
-  if (!existsSync(JOURNAL_DIR)) return entries;
+  if (!existsSync(journalDir)) return entries;
 
-  const files = readdirSync(JOURNAL_DIR)
+  const files = readdirSync(journalDir)
     .filter((f: string) => f.endsWith(".jsonl"))
     .sort()
     .reverse();
@@ -160,7 +147,7 @@ function getRecentJournalEntries(count: number): JournalEntry[] {
   for (const file of files) {
     if (entries.length >= count) break;
 
-    const content = readFileSync(join(JOURNAL_DIR, file), "utf-8");
+    const content = readFileSync(join(journalDir, file), "utf-8");
     const lines = content.trim().split("\n").filter(Boolean);
 
     for (const line of lines.reverse()) {
@@ -197,10 +184,10 @@ server.tool(
           type: "text" as const,
           text: JSON.stringify({
             paths: {
-              root: STATE_ROOT,
-              state: STATE_DIR,
-              entities: ENTITIES_DIR,
-              journal: JOURNAL_DIR,
+              root: getStateRoot(),
+              state: getStateDir(),
+              entities: getEntitiesDir(),
+              journal: getJournalDir(),
             },
           }, null, 2),
         },
@@ -313,7 +300,7 @@ server.tool(
     }
 
     const today = new Date().toISOString().split("T")[0];
-    const signalPath = join(SIGNALS_DIR, `${today}.jsonl`);
+    const signalPath = join(getSignalsDir(), `${today}.jsonl`);
     appendFileSync(signalPath, JSON.stringify(signal) + "\n");
 
     return {

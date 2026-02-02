@@ -15,6 +15,33 @@ Guide new users through initial macrodata setup.
 
 ## Onboarding Flow
 
+### Phase 0: Prerequisites
+
+Check that Bun is installed (required for the MCP server):
+
+```bash
+command -v bun
+```
+
+If not found, offer to install it:
+
+**Ask:** "Macrodata needs Bun to run. Would you like me to install it?"
+
+If yes, run:
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+After installation, verify it worked:
+```bash
+# Source the updated PATH
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+command -v bun && bun --version
+```
+
+If they decline, explain that macrodata won't work without Bun and ask if they'd like to install it manually later.
+
 ### Phase 1: Location
 
 Ask where to store macrodata files. Suggest accessible locations:
@@ -51,6 +78,15 @@ gh api user --jq '.login, .name, .blog' 2>/dev/null
 - What's your GitHub username? (if not detected from gh cli)
 - Do you have a website or blog?
 - Any social profiles you'd like me to know about?
+
+**Research their online presence:**
+If they provide a website, socials, or GitHub, fetch and analyze them for:
+- Bio and self-description
+- What they write about (interests, expertise)
+- Tone and voice in their writing
+- Projects and work they highlight
+
+This gives context beyond what they explicitly state – understanding who they are publicly helps the agent communicate appropriately.
 
 **Communication style:**
 If they consent, analyze their Claude Code session history (`~/.claude/projects/`):
@@ -171,7 +207,41 @@ Set up working context:
 - [things in progress]
 ```
 
-### Phase 5: Finalize
+### Phase 5: Permissions
+
+Ask if they'd like to pre-grant permissions for macrodata paths. This avoids permission prompts every session.
+
+**Ask:** "Would you like me to update your Claude Code settings to pre-grant permissions for macrodata? This means you won't be prompted each time macrodata reads or writes to its memory folder."
+
+If yes, update `~/.claude/settings.json` to add:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Read(~/.config/macrodata/**)",
+      "Edit(~/.config/macrodata/**)",
+      "Write(~/.config/macrodata/**)",
+      "Read(~/.claude/projects/**)",
+      "mcp__plugin_macrodata_macrodata__*"
+    ]
+  }
+}
+```
+
+**Important:** Replace `~/.config/macrodata` with their actual chosen root path. The paths should be:
+- The macrodata root folder (read/write/edit)
+- `~/.claude/projects/` (read only, for conversation history search)
+- All macrodata MCP tools (pattern: `mcp__plugin_macrodata_macrodata__*`)
+
+Merge with existing settings rather than overwriting:
+
+```bash
+# Read existing settings, merge permissions, write back
+jq -s '.[0] * .[1]' ~/.claude/settings.json <(echo '{"permissions":{"allow":["..."]}}') > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
+```
+
+### Phase 6: Finalize
 
 1. Rebuild the memory index with `rebuild_memory_index`
 2. Log completion to journal

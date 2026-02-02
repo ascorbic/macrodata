@@ -5,30 +5,11 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
+import { getStateRoot, getJournalDir, getSchedulesFile } from "../src/config.js";
 
-// Configuration
-export function getStateRoot(): string {
-  // Check for env var first (set by user config)
-  if (process.env.MACRODATA_ROOT) {
-    return process.env.MACRODATA_ROOT;
-  }
-
-  // Check for config file
-  const configPath = join(homedir(), ".config", "opencode", "macrodata.json");
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, "utf-8"));
-      if (config.root) return config.root;
-    } catch {
-      // Ignore parse errors
-    }
-  }
-
-  // Default
-  return join(homedir(), ".config", "macrodata");
-}
+// Re-export for compatibility
+export { getStateRoot } from "../src/config.js";
 
 function readFileOrEmpty(path: string): string {
   try {
@@ -49,9 +30,8 @@ interface JournalEntry {
 }
 
 function getRecentJournal(count: number): JournalEntry[] {
-  const stateRoot = getStateRoot();
-  const journalDir = join(stateRoot, "journal");
   const entries: JournalEntry[] = [];
+  const journalDir = getJournalDir();
 
   if (!existsSync(journalDir)) return entries;
 
@@ -93,9 +73,7 @@ interface Schedule {
 }
 
 function getSchedules(): Schedule[] {
-  const stateRoot = getStateRoot();
-  const schedulesFile = join(stateRoot, ".schedules.json");
-
+  const schedulesFile = getSchedulesFile();
   if (!existsSync(schedulesFile)) return [];
 
   try {
@@ -125,7 +103,7 @@ export async function formatContextForPrompt(
     if (!forCompaction) {
       return `[MACRODATA]
 
-Memory not configured. Set MACRODATA_ROOT environment variable or create ~/.config/opencode/macrodata.json with {"root": "/path/to/state"}`;
+Memory not configured. Set MACRODATA_ROOT environment variable or create ~/.config/macrodata/config.json with {"root": "/path/to/state"}`;
     }
     return null;
   }
@@ -168,7 +146,7 @@ Memory not configured. Set MACRODATA_ROOT environment variable or create ~/.conf
   if (!forCompaction) {
     sections.push(`## Schedules\n\n${schedulesFormatted}`);
     sections.push(
-      `## Paths\n\n- Root: \`${stateRoot}\`\n- State: \`${join(stateRoot, "state")}\`\n- Journal: \`${join(stateRoot, "journal")}\``
+      `## Paths\n\n- Root: \`${stateRoot}\`\n- State: \`${join(stateRoot, "state")}\`\n- Journal: \`${getJournalDir()}\``
     );
   }
 

@@ -15,12 +15,11 @@ import { join, basename } from "path";
 import { homedir } from "os";
 import { embed, embedBatch } from "./embeddings.js";
 import { LocalIndex } from "vectra";
+import { getIndexDir } from "./config.js";
 
 // Configuration
 const CLAUDE_DIR = join(homedir(), ".claude");
 const PROJECTS_DIR = join(CLAUDE_DIR, "projects");
-const STATE_ROOT = process.env.MACRODATA_ROOT || join(homedir(), ".config", "macrodata");
-const CONV_INDEX_PATH = join(STATE_ROOT, ".index", "conversations");
 
 // Types
 interface ConversationMessage {
@@ -56,25 +55,35 @@ export interface ConversationSearchResult {
   adjustedScore: number; // After time weighting and project boost
 }
 
-// Singleton index
+// Cached index with path tracking
 let convIndex: LocalIndex | null = null;
+let convIndexPath: string | null = null;
 
 async function getConversationIndex(): Promise<LocalIndex> {
-  if (convIndex) return convIndex;
-  
-  const indexDir = join(STATE_ROOT, ".index");
-  if (!existsSync(indexDir)) {
-    const { mkdirSync } = await import("fs");
-    mkdirSync(indexDir, { recursive: true });
+  const currentIndexDir = getIndexDir();
+  const currentIndexPath = join(currentIndexDir, "conversations");
+
+  // Invalidate cache if path changed
+  if (convIndex && convIndexPath !== currentIndexPath) {
+    convIndex = null;
+    convIndexPath = null;
   }
-  
-  convIndex = new LocalIndex(CONV_INDEX_PATH);
-  
+
+  if (convIndex) return convIndex;
+
+  if (!existsSync(currentIndexDir)) {
+    const { mkdirSync } = await import("fs");
+    mkdirSync(currentIndexDir, { recursive: true });
+  }
+
+  convIndex = new LocalIndex(currentIndexPath);
+  convIndexPath = currentIndexPath;
+
   if (!(await convIndex.isIndexCreated())) {
     console.error("[Conversations] Creating new conversation index...");
     await convIndex.createIndex();
   }
-  
+
   return convIndex;
 }
 
@@ -100,14 +109,102 @@ function extractAssistantText(content: string | Array<{ type: string; text?: str
   if (typeof content === "string") {
     return content.slice(0, 500);
   }
-  
+
   for (const block of content) {
     if (block.type === "text" && block.text) {
       return block.text.slice(0, 500);
     }
   }
-  
+
   return "";
+}
+
+/**
+ * Check if user message content is a tool result (not an actual user prompt)
+ */
+function isToolResult(content: unknown): boolean {
+  if (Array.isArray(content)) {
+    // Array content with tool_result or tool_use_id = tool result, not user prompt
+    return content.some(item =>
+      item.type === "tool_result" ||
+      item.tool_use_id !== undefined
+    );
+  }
+  return false;
+}
+
+/**
+ * Check if content is noise we should skip indexing
+ */
+function isNoiseContent(content: string): boolean {
+  // Skip compacted session summaries
+  if (content.startsWith("This session is being continued from a previous conversation")) {
+    return true;
+  }
+
+  // Skip local command outputs
+  if (content.includes("<local-command-stdout>") ||
+      content.includes("<local-command-caveat>") ||
+      content.includes("<command-name>")) {
+    return true;
+  }
+
+  // Skip hook-injected context (standalone, not part of agent context)
+  if (content.startsWith("<current_time>") ||
+      content.startsWith("<context_status>") ||
+      content.startsWith("<state_files>") ||
+      content.startsWith("<system-reminder>") ||
+      content.startsWith("## Current State Files") ||
+      content.startsWith("Base directory for this skill:")) {
+    return true;
+  }
+
+  // Skip very short messages (likely just acknowledgments)
+  if (content.trim().length < 10) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Extract actual user text from message content, filtering out tool results
+ */
+function extractUserText(content: string | unknown[]): string {
+  let text = "";
+
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    // Array content - try to find actual text blocks
+    for (const block of content) {
+      const b = block as Record<string, unknown>;
+      // Skip tool results
+      if (b.type === "tool_result" || b.tool_use_id !== undefined) {
+        continue;
+      }
+      // Look for text content
+      if (b.type === "text" && typeof b.text === "string") {
+        text = b.text;
+        break;
+      }
+    }
+  }
+
+  if (!text) return "";
+
+  // Extract actual user message from agent context blocks
+  // These have format: "# Agent Context\n...\nUser message: <actual message>"
+  if (text.startsWith("# Agent Context") || text.includes("\nUser message: ")) {
+    const userMsgMatch = text.match(/\nUser message: (.+)$/s);
+    if (userMsgMatch) {
+      return userMsgMatch[1].trim();
+    }
+    // No user message found in context block - skip it
+    return "";
+  }
+
+  return text;
 }
 
 /**
@@ -116,41 +213,51 @@ function extractAssistantText(content: string | Array<{ type: string; text?: str
 function parseConversationFile(filePath: string, projectPath: string): ConversationExchange[] {
   const exchanges: ConversationExchange[] = [];
   const projectName = getProjectName(projectPath);
-  
+
   try {
     const content = readFileSync(filePath, "utf-8");
     const lines = content.trim().split("\n").filter(Boolean);
-    
-    let currentUser: ConversationMessage | null = null;
-    
+
+    let currentUser: { msg: ConversationMessage; text: string } | null = null;
+
     for (const line of lines) {
       try {
         const msg: ConversationMessage = JSON.parse(line);
-        
+
         if (msg.type === "user" && msg.message?.content) {
-          currentUser = msg;
+          // Skip tool results - these aren't actual user prompts
+          if (isToolResult(msg.message.content)) {
+            continue;
+          }
+
+          // Extract the actual text
+          const userText = extractUserText(msg.message.content);
+
+          // Skip noise (command outputs, compacted summaries, very short messages)
+          if (!userText || isNoiseContent(userText)) {
+            continue;
+          }
+
+          currentUser = { msg, text: userText };
         } else if (msg.type === "assistant" && currentUser && msg.message?.content) {
           // Found a user-assistant pair
-          const userContent = typeof currentUser.message?.content === "string" 
-            ? currentUser.message.content 
-            : "";
           const assistantText = extractAssistantText(msg.message.content);
-          
-          if (userContent && assistantText) {
+
+          if (currentUser.text && assistantText) {
             exchanges.push({
-              id: `conv-${currentUser.sessionId}-${currentUser.uuid}`,
-              userPrompt: userContent.slice(0, 1000),
+              id: `conv-${currentUser.msg.sessionId}-${currentUser.msg.uuid}`,
+              userPrompt: currentUser.text.slice(0, 1000),
               assistantSummary: assistantText,
               project: projectName,
               projectPath: projectPath,
-              branch: currentUser.gitBranch,
-              timestamp: currentUser.timestamp || new Date().toISOString(),
-              sessionId: currentUser.sessionId || basename(filePath, ".jsonl"),
+              branch: currentUser.msg.gitBranch,
+              timestamp: currentUser.msg.timestamp || new Date().toISOString(),
+              sessionId: currentUser.msg.sessionId || basename(filePath, ".jsonl"),
               sessionPath: filePath,
-              messageUuid: currentUser.uuid || "",
+              messageUuid: currentUser.msg.uuid || "",
             });
           }
-          
+
           currentUser = null; // Reset for next exchange
         }
       } catch {
@@ -160,7 +267,7 @@ function parseConversationFile(filePath: string, projectPath: string): Conversat
   } catch (err) {
     console.error(`[Conversations] Failed to parse ${filePath}: ${err}`);
   }
-  
+
   return exchanges;
 }
 
@@ -356,31 +463,39 @@ export async function expandConversation(
   if (!existsSync(sessionPath)) {
     throw new Error(`Session file not found: ${sessionPath}`);
   }
-  
+
   const content = readFileSync(sessionPath, "utf-8");
   const lines = content.trim().split("\n").filter(Boolean);
-  
+
   const messages: Array<{ role: string; content: string; timestamp?: string; uuid?: string }> = [];
   let project = "";
   let branch: string | undefined;
-  
+
   // Parse all messages
   for (const line of lines) {
     try {
       const msg: ConversationMessage = JSON.parse(line);
-      
+
       if (msg.type === "user" && msg.message?.content) {
-        const text = typeof msg.message.content === "string" 
-          ? msg.message.content 
-          : msg.message.content.map(b => b.text || "").join("");
-        
+        // Skip tool results
+        if (isToolResult(msg.message.content)) {
+          continue;
+        }
+
+        const text = extractUserText(msg.message.content);
+
+        // Skip empty or noise content
+        if (!text || isNoiseContent(text)) {
+          continue;
+        }
+
         messages.push({
           role: "user",
           content: text,
           timestamp: msg.timestamp,
           uuid: msg.uuid,
         });
-        
+
         if (!project && msg.cwd) {
           project = getProjectName(msg.cwd);
         }
@@ -389,21 +504,23 @@ export async function expandConversation(
         }
       } else if (msg.type === "assistant" && msg.message?.content) {
         const text = extractAssistantText(msg.message.content);
-        messages.push({
-          role: "assistant",
-          content: text,
-          timestamp: msg.timestamp,
-          uuid: msg.uuid,
-        });
+        if (text) {
+          messages.push({
+            role: "assistant",
+            content: text,
+            timestamp: msg.timestamp,
+            uuid: msg.uuid,
+          });
+        }
       }
     } catch {
       // Skip malformed lines
     }
   }
-  
+
   // Find the target message index
   const targetIdx = messages.findIndex(m => m.uuid === messageUuid);
-  
+
   if (targetIdx === -1) {
     // Return last N messages if target not found
     return {
@@ -412,11 +529,11 @@ export async function expandConversation(
       branch,
     };
   }
-  
+
   // Return context around target
   const start = Math.max(0, targetIdx - Math.floor(contextMessages / 2));
   const end = Math.min(messages.length, start + contextMessages);
-  
+
   return {
     messages: messages.slice(start, end).map(({ uuid, ...rest }) => rest),
     project,

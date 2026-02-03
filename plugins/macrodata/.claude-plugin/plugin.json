@@ -1,55 +1,62 @@
 {
-  "name": "macrodata",
-  "version": "0.0.0",
-  "description": "Stateful agent tools for Claude Code. Learns who you are, remembers what you're working on, schedules tasks, maintains itself.",
-  "author": {
-    "name": "Matt Kane",
-    "url": "https://mk.gg"
-  },
-  "repository": "https://github.com/ascorbic/macrodata",
-  "license": "MIT",
-  "keywords": ["memory", "context", "local"],
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/macrodata-hook.sh session-start"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/macrodata-hook.sh prompt-submit"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun run ${CLAUDE_PLUGIN_ROOT}/bin/index-conversations.ts"
-          },
-          {
-            "type": "prompt",
-            "prompt": "Context is about to be compacted. Before this happens, save what's important.\n\nUse save_conversation_summary to capture:\n- What was accomplished in this session\n- Key decisions made\n- Any open threads that need follow-up\n- Patterns learned about the user\n\nBe concise but thorough. This summary will help recover context in future sessions.\n\nContext being compacted:\n$ARGUMENTS",
-            "timeout": 60
-          }
-        ]
-      }
-    ]
-  },
-  "mcpServers": {
-    "macrodata": {
-      "command": "bun",
-      "args": ["run", "${CLAUDE_PLUGIN_ROOT}/src/index.ts"]
-    }
-  }
+	"name": "macrodata",
+	"version": "0.1.0",
+	"description": "Stateful agent tools for Claude Code. Learns who you are, remembers what you're working on, schedules tasks, maintains itself.",
+	"author": {
+		"name": "Matt Kane",
+		"url": "https://mk.gg"
+	},
+	"repository": "https://github.com/ascorbic/macrodata",
+	"license": "MIT",
+	"keywords": [
+		"memory",
+		"context",
+		"local"
+	],
+	"hooks": {
+		"SessionStart": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "${CLAUDE_PLUGIN_ROOT}/bin/macrodata-hook.sh session-start"
+					}
+				]
+			}
+		],
+		"UserPromptSubmit": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "${CLAUDE_PLUGIN_ROOT}/bin/macrodata-hook.sh prompt-submit"
+					}
+				]
+			}
+		],
+		"PreCompact": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bun run ${CLAUDE_PLUGIN_ROOT}/bin/index-conversations.ts"
+					},
+					{
+						"type": "prompt",
+						"prompt": "Context is about to be compacted. Before this happens, save what's important.\n\nUse save_conversation_summary to capture:\n- What was accomplished in this session\n- Key decisions made\n- Any open threads that need follow-up\n- Patterns learned about the user\n\nBe concise but thorough. This summary will help recover context in future sessions.\n\nContext being compacted:\n$ARGUMENTS",
+						"timeout": 60
+					}
+				]
+			}
+		]
+	},
+	"mcpServers": {
+		"macrodata": {
+			"command": "bun",
+			"args": [
+				"run",
+				"${CLAUDE_PLUGIN_ROOT}/src/index.ts"
+			]
+		}
+	}
 }

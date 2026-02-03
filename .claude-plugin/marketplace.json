@@ -12,7 +12,7 @@
 			"name": "macrodata",
 			"source": "./plugins/macrodata",
 			"description": "Stateful agent tools for Claude Code. Local-only memory, scheduling, and autonomy.",
-			"version": "0.0.0"
+			"version": "0.1.0"
 		}
 	]
 }

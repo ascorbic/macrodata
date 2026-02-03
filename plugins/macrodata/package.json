@@ -27,7 +27,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ascorbic/macrodata",
+    "url": "git+https://github.com/ascorbic/macrodata.git",
     "directory": "plugins/macrodata"
   },
   "homepage": "https://github.com/ascorbic/macrodata#readme",

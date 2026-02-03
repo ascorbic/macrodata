@@ -48,7 +48,7 @@ jobs:
         uses: changesets/action@v1
         with:
           version: bun run version
-          publish: npm publish --provenance --access public --workspace=@macrodata/opencode
+          publish: npm publish --workspace=@macrodata/opencode
           commit: "ci: release"
           title: "ci: release"
         env:

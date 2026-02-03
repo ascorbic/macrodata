@@ -83,7 +83,7 @@ manage_index(target="conversations", action="update")
 Write a brief maintenance journal entry:
 
 ```
-log_journal(topic="maintenance", content="[what was updated, what was pruned, any observations]")
+Use the macrodata log_journal tool with topic="maintenance", content="[what was updated, what was pruned, any observations]"
 ```
 
 Note anything uncertain that should be confirmed with the user next session.

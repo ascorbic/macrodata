@@ -78,12 +78,12 @@ After all sub-agents complete:
 **Write distilled actions to journal:**
 ```
 For each action in all results:
-  log_journal(topic="distilled", content=action.summary + " Files: " + action.files.join(", "))
+  Use the macrodata log_journal tool with topic="distilled", content=action.summary + " Files: " + action.files.join(", ")
 ```
 
 **Write overall summary to journal:**
 ```
-log_journal(topic="distill-summary", content="Processed N sessions. Extracted X actions, Y facts.")
+Use the macrodata log_journal tool with topic="distill-summary", content="Processed N sessions. Extracted X actions, Y facts."
 ```
 
 **Update entity files with facts:**

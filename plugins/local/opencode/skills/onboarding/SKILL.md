@@ -13,24 +13,23 @@ Guide new users through initial macrodata setup.
 - User explicitly asks to set up or reset their profile
 - State files are empty or missing
 
+
 ## Onboarding Flow
 
 ### Phase 1: Location
 
-Ask where to store macrodata files. First, check which directories exist:
+First, check which directories exist:
 
 ```bash
 # Check for common code directories
 ls -d ~/Repos ~/repos ~/Code ~/code ~/Projects ~/projects ~/Developer ~/dev 2>/dev/null
 ```
 
-Then offer location options based on what exists:
+Offer location options. Always include:
+- `~/Documents/macrodata` - easy to find
+- `~/.config/macrodata` - hidden, default
 
-1. `~/Documents/macrodata` (easy to find, always suggest)
-2. `~/<detected-code-dir>/macrodata` (only if a code directory was found above)
-3. `~/.config/macrodata` (default, hidden)
-
-**Important:** Only suggest a code directory option if one actually exists. Don't suggest `~/Repos` or similar if the user doesn't have that directory.
+Only include a code directory option (e.g. `~/Code/macrodata`) if one was detected above.
 
 If they choose a non-default location, write the config to `~/.config/opencode/macrodata.json`:
 
@@ -206,9 +205,46 @@ Set up working context:
 - [things in progress]
 ```
 
-### Phase 5: Finalize
+### Phase 5: Scheduled Reminders
 
-1. Rebuild the memory index with `rebuild_memory_index`
+Offer optional scheduled reminders. These run in the background with no user interaction.
+
+**Options to offer:**
+
+1. **Morning prep** (daily, 9am) - Quick review to set the day's focus. Updates today.md.
+
+2. **Memory maintenance** (daily, 6pm) - End of day cleanup. Reviews journals, updates state files, prunes stale info. Runs the `/memory-maintenance` skill.
+
+3. **Dreamtime** (daily, 2am) - Deep nightly reflection. Self-improvement, research, pattern recognition. Runs the `/dreamtime` skill.
+
+For each selected reminder, use the `schedule` tool to create it:
+
+```
+Morning prep:
+- id: morning-prep
+- type: cron
+- expression: 0 9 * * *
+- description: Morning prep - update today.md
+- payload: Review today.md. What's the focus for today? Any carryover from yesterday? Check calendar or recent context for what's planned. Keep it brief.
+
+Memory maintenance:
+- id: memory-maintenance
+- type: cron
+- expression: 0 18 * * *
+- description: End of day memory maintenance
+- payload: Run the memory-maintenance skill.
+
+Dreamtime:
+- id: dreamtime
+- type: cron
+- expression: 0 2 * * *
+- description: Nightly reflection and self-improvement
+- payload: Run the dreamtime skill.
+```
+
+### Phase 6: Finalize
+
+1. Rebuild the memory index with `manage_index`
 2. Log completion to journal
 3. Summarize what was created
 4. Suggest next steps

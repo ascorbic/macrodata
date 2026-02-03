@@ -259,6 +259,18 @@ jq -s '.[0] * .[1]' ~/.claude/settings.json <(echo '{"permissions":{"allow":["..
 
 ### Phase 7: Scheduled Reminders
 
+**First, check available integrations:**
+
+Look at the tools, skills, and MCP servers available in your current context. Note any that might be useful for scheduled tasks - for example:
+- Calendar integrations → could check meetings in morning prep
+- Email/messaging tools → could summarize communications
+- Task managers → could review todos
+- Project management tools → could check status
+
+Don't hardcode specific tool names - just note what categories are available. Mention relevant ones when describing the schedule options below.
+
+**Then offer scheduled reminders:**
+
 Use `AskUserQuestion` to offer optional scheduled reminders. These run in the background with no user interaction.
 
 **Options to offer (multiSelect: true):**
@@ -277,7 +289,7 @@ Morning prep:
 - type: cron
 - expression: 0 9 * * *
 - description: Morning prep - update today.md
-- payload: Review today.md. What's the focus for today? Any carryover from yesterday? Check calendar or recent context for what's planned. Keep it brief.
+- payload: Review today.md. What's the focus for today? Any carryover from yesterday? Check if any calendar, email, or task tools are available and use them to see what's planned. Keep it brief.
 
 Memory maintenance:
 - id: memory-maintenance

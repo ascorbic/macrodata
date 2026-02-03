@@ -10,9 +10,49 @@
 
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Part } from "@opencode-ai/sdk";
+import { existsSync, mkdirSync, cpSync, readdirSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
 import { memoryTools } from "./tools.js";
 import { formatContextForPrompt, getStateRoot, storeLastmod, checkFilesChanged } from "./context.js";
 import { logJournal } from "./journal.js";
+
+/**
+ * Install plugin skills to ~/.config/opencode/skills/
+ * Skills are copied from the plugin's skills directory on first load
+ */
+function installSkills(): void {
+  const globalSkillsDir = join(homedir(), ".config", "opencode", "skills");
+  // import.meta.dirname is the opencode/ folder
+  const pluginSkillsDir = join(import.meta.dirname, "skills");
+
+  if (!existsSync(pluginSkillsDir)) {
+    return;
+  }
+
+  // Ensure global skills directory exists
+  if (!existsSync(globalSkillsDir)) {
+    mkdirSync(globalSkillsDir, { recursive: true });
+  }
+
+  // Copy each skill directory
+  const skills = readdirSync(pluginSkillsDir, { withFileTypes: true })
+    .filter(d => d.isDirectory())
+    .map(d => d.name);
+
+  for (const skill of skills) {
+    const src = join(pluginSkillsDir, skill);
+    const dest = join(globalSkillsDir, skill);
+    
+    // Always update skills (overwrite existing)
+    try {
+      cpSync(src, dest, { recursive: true });
+      console.error(`[Macrodata] Installed skill: ${skill}`);
+    } catch (err) {
+      console.error(`[Macrodata] Failed to install skill ${skill}: ${String(err)}`);
+    }
+  }
+}
 
 // Track which sessions have had initial context injected
 const injectedSessions = new Set<string>();
@@ -23,6 +63,9 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
 
   console.error(`[Macrodata] Plugin initialized for ${directory}`);
   console.error(`[Macrodata] State root: ${stateRoot}`);
+
+  // Install skills to global config on plugin load
+  installSkills();
 
   return {
     // Inject context on first message or when state files change

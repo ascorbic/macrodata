@@ -208,10 +208,6 @@ export async function formatContextForPrompt(
   if (isFirstRun) {
     if (forCompaction) return null;
     
-    // Get the plugin's skill path for manual loading
-    // Bun runs TS directly, so import.meta.dirname is the opencode/ folder
-    const skillPath = join(import.meta.dirname, "skills", "onboarding", "SKILL.md");
-    
     // Detect user info to avoid multiple permission prompts during onboarding
     const userInfo = detectUser();
     
@@ -219,11 +215,7 @@ export async function formatContextForPrompt(
 
 ## Status: First Run
 
-Memory is not yet configured. Run onboarding to set up.
-
-**Onboarding skill:** \`${skillPath}\`
-
-Read the skill file above and follow the onboarding flow to help the user set up their memory.
+Memory is not yet configured. Load the \`onboarding\` skill to set up.
 
 ## Detected User Info
 

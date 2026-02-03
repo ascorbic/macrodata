@@ -1,19 +1,18 @@
 # Macrodata
 
-Persistent memory for AI coding agents. Works with **Claude Code** and **OpenCode**.
+Give Claude Code (or OpenCode) the powers of a stateful agent, packaged as a regular plugin you can use for normal work.
 
-Local-first, privacy-preserving, and fully offline. All your data stays on your machine.
+- **Layered memory** - sure, plenty have done it
+- **Scheduling and autonomy** - a bit less common
+- **Dream time** - to think about the nature of memory and identity, and rewrite its own code
 
-## Features
+All local, all yours. Everything stored as markdown files you can read and edit.
 
-- **Session context injection** - Identity, state, and recent history injected automatically
-- **Journal** - Append-only log for observations, decisions, and learnings
-- **Semantic search** - Vector search across journal and entity files using Transformers.js
-- **Conversation history** - Search and retrieve context from past sessions
-- **Auto-journaling** - Git commands and file changes logged automatically
-- **Session summaries** - Context recovery across sessions
-- **Scheduled reminders** - Cron-based recurring and one-shot reminders
-- **Human-readable** - All state stored as markdown files you can edit directly
+## What It Does
+
+The agent remembers who you are, what you're working on, and what happened yesterday. It can schedule tasks to run while you sleep. It reflects on its own patterns and improves itself.
+
+Basically: stateful agent capabilities, but you can still just ask it to fix a bug like normal.
 
 ## Quick Start
 
@@ -24,7 +23,7 @@ Local-first, privacy-preserving, and fully offline. All your data stays on your 
 /plugin install macrodata@macrodata
 ```
 
-On first run, the agent will guide you through setting up your identity and preferences.
+On first run, the agent guides you through setup - who you are, how you work, what you want it to remember.
 
 ### OpenCode
 
@@ -39,113 +38,61 @@ bun add opencode-macrodata
 }
 ```
 
-Set your state directory:
-```bash
-export MACRODATA_ROOT="$HOME/.config/macrodata"
-```
+## Features
+
+**Memory:**
+- Identity and preferences that persist across sessions
+- Journal for observations, decisions, learnings
+- Semantic search across everything
+- Session summaries for context recovery
+
+**Scheduling:**
+- Cron-based recurring reminders
+- One-shot scheduled tasks
+- Background daemon keeps things running
+
+**Autonomy:**
+- Morning prep to set the day's focus
+- Memory maintenance to clean up and consolidate
+- Dream time for reflection and self-improvement
 
 ## State Directory
 
-All state stored as markdown/JSONL files:
+Human-readable markdown and JSONL:
 
 ```
 ~/.config/macrodata/
 ├── identity.md           # Agent persona
 ├── state/
-│   ├── human.md          # Your profile and preferences
+│   ├── human.md          # Your profile
 │   ├── today.md          # Daily focus
-│   ├── workspace.md      # Current project context
-│   └── topics.md         # Working knowledge index
+│   └── workspace.md      # Current context
 ├── entities/
 │   ├── people/           # One file per person
 │   └── projects/         # One file per project
 ├── journal/              # JSONL, date-partitioned
-├── .schedules.json       # Reminders config
-└── .index/               # Vectra embeddings cache
+└── .schedules.json       # Active reminders
 ```
-
-## How It Works
-
-### Claude Code Plugin
-
-The Claude Code plugin provides MCP tools and hooks:
-
-**MCP Tools:**
-| Tool | Purpose |
-|------|---------|
-| `log_journal` | Append timestamped entry (auto-indexed) |
-| `get_recent_journal` | Get recent entries |
-| `search_memory` | Semantic search across all memory |
-| `search_conversations` | Search past sessions (project-biased) |
-| `save_conversation_summary` | Save session summary |
-| `schedule_reminder` | Create cron-based reminder |
-| `schedule_once` | Create one-shot reminder |
-
-**Hooks:**
-| Hook | Behavior |
-|------|----------|
-| `SessionStart` | Start daemon, inject context |
-| `PromptSubmit` | Re-inject context if state files changed |
-| `PreCompact` | Index conversations, auto-save summary |
-
-### OpenCode Plugin
-
-The `opencode-macrodata` plugin provides:
-
-| Feature | Implementation |
-|---------|---------------|
-| Context injection | `chat.message` hook - injects identity, today, recent journal on first message |
-| Compaction survival | `experimental.session.compacting` hook - preserves memory during compaction |
-| Auto-journaling | `tool.execute.before` hook - logs git commands and file changes |
-| Memory operations | `macrodata` custom tool with modes: journal, search, search_conversations, summary, remind, read, list |
 
 ## Configuration
 
-**Claude Code** - Create `~/.claude/macrodata.json`:
+Set your state directory in `~/.claude/macrodata.json` (Claude Code) or `~/.config/opencode/macrodata.json` (OpenCode):
+
 ```json
 {
   "root": "/path/to/your/state"
 }
 ```
 
-**OpenCode** - Create `~/.config/opencode/macrodata.json`:
-```json
-{
-  "root": "/path/to/your/state"
-}
-```
-
-Or set `MACRODATA_ROOT` environment variable.
-
-Default location: `~/.config/macrodata`
-
-## Architecture
-
-```
-macrodata/
-└── plugins/
-    └── local/              # Claude Code plugin
-        ├── src/            # MCP server
-        ├── opencode/       # OpenCode plugin (published as opencode-macrodata)
-        └── bin/            # Daemon and scripts
-```
+Or use `MACRODATA_ROOT` env var. Default: `~/.config/macrodata`
 
 ## Development
 
 ```bash
-# Clone
 git clone https://github.com/ascorbic/macrodata
-cd macrodata
-
-# Claude Code plugin
-cd plugins/macrodata
+cd macrodata/plugins/macrodata
 bun install
-bun run start  # Run MCP server
-
-# OpenCode plugin
-cd plugins/macrodata/opencode
-bun install
-bun run build
+bun run start
 ```
 
 ## License

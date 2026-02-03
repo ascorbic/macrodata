@@ -32,6 +32,23 @@ function isProcessRunning(pid: number): boolean {
 }
 
 /**
+ * Send SIGHUP to the daemon to reload config
+ */
+function signalDaemonReload(): void {
+  const pidFile = join(homedir(), ".config", "macrodata", ".daemon.pid");
+  if (!existsSync(pidFile)) return;
+
+  try {
+    const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+    if (isProcessRunning(pid)) {
+      process.kill(pid, "SIGHUP");
+    }
+  } catch {
+    // Ignore errors
+  }
+}
+
+/**
  * Ensure the macrodata daemon is running
  * Checks PID file, starts daemon if not running
  */
@@ -114,10 +131,13 @@ const injectedSessions = new Set<string>();
 export const MacrodataPlugin: Plugin = async (_ctx: PluginInput) => {
   // Initialize state directories
   initializeStateRoot();
-  
+
   // Ensure daemon is running for scheduled reminders
   ensureDaemonRunning();
-  
+
+  // Signal daemon to reload config (in case it was started with old config)
+  signalDaemonReload();
+
   // Install skills to global config on plugin load
   installSkills();
 

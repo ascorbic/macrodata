@@ -69,6 +69,15 @@ start_daemon() {
     done
 }
 
+signal_daemon_reload() {
+    if [ -f "$PIDFILE" ]; then
+        local pid=$(cat "$PIDFILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -HUP "$pid" 2>/dev/null
+        fi
+    fi
+}
+
 inject_pending_context() {
     if [ -s "$PENDING_CONTEXT" ]; then
         cat "$PENDING_CONTEXT"
@@ -116,6 +125,32 @@ get_recent_journal() {
     done
     
     echo "$entries" | head -n "$count"
+}
+
+list_state_files() {
+    local files=""
+
+    # State files
+    if [ -d "$STATE_ROOT/state" ]; then
+        for f in "$STATE_ROOT/state"/*.md; do
+            [ -f "$f" ] && files="$files\n- state/$(basename "$f")"
+        done
+    fi
+
+    # Entity files
+    for subdir in people projects; do
+        if [ -d "$STATE_ROOT/entities/$subdir" ]; then
+            for f in "$STATE_ROOT/entities/$subdir"/*.md; do
+                [ -f "$f" ] && files="$files\n- entities/$subdir/$(basename "$f")"
+            done
+        fi
+    done
+
+    if [ -z "$files" ]; then
+        echo "_No files yet_"
+    else
+        echo -e "$files"
+    fi
 }
 
 get_schedules() {
@@ -188,10 +223,10 @@ $(get_schedules)
 
 ## Paths
 
-- Root: \`$STATE_ROOT\`
-- State: \`$STATE_ROOT/state\`
-- Entities: \`$STATE_ROOT/entities\`
-- Journal: \`$STATE_ROOT/journal\`
+Root: \`$STATE_ROOT\`
+
+### Files
+$(list_state_files)
 </macrodata-local>"
     fi
 
@@ -206,6 +241,7 @@ $(get_schedules)
 case "$1" in
     session-start)
         start_daemon
+        signal_daemon_reload
         inject_static_context
         store_lastmod
         ;;

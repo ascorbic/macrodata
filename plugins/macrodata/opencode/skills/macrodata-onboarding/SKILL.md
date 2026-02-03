@@ -42,6 +42,12 @@ If they choose a non-default location, write the config to `~/.config/macrodata/
 }
 ```
 
+After writing the config, signal the daemon to reload:
+
+```bash
+kill -HUP $(cat ~/.config/macrodata/.daemon.pid) 2>/dev/null || true
+```
+
 Then create the directory structure:
 - `<root>/state/`
 - `<root>/journal/`
@@ -145,7 +151,7 @@ Help define who the agent should be:
 - What behaviors should it prioritize?
 - How proactive should it be?
 
-Write to `identity.md`:
+Write to `state/identity.md`:
 
 ```markdown
 # [Agent Name] Identity

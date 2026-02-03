@@ -7,7 +7,6 @@
 import { tool } from "@opencode-ai/plugin";
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
-import { getStateRoot } from "./context.js";
 import { getRemindersDir } from "../src/config.js";
 import {
   logJournal,
@@ -379,54 +378,6 @@ export const listRemindersTool = tool({
   },
 });
 
-// --- State File Tools ---
-
-export const readStateFileTool = tool({
-  description: "Read a state file",
-  args: {
-    file: tool.schema.string().describe("File to read (e.g., 'identity', 'today', 'human', 'workspace', 'topics')"),
-  },
-  async execute(args) {
-    if (!args.file) {
-      return JSON.stringify({ success: false, error: "Requires 'file'" });
-    }
-
-    const stateRoot = getStateRoot();
-    const fileMap: Record<string, string> = {
-      identity: join(stateRoot, "state", "identity.md"),
-      today: join(stateRoot, "state", "today.md"),
-      human: join(stateRoot, "state", "human.md"),
-      workspace: join(stateRoot, "state", "workspace.md"),
-      topics: join(stateRoot, "state", "topics.md"),
-    };
-
-    const filePath = fileMap[args.file] || args.file;
-
-    if (!existsSync(filePath)) {
-      return JSON.stringify({ success: false, error: `File not found: ${filePath}` });
-    }
-
-    const content = readFileSync(filePath, "utf-8");
-    return JSON.stringify({ success: true, path: filePath, content });
-  },
-});
-
-// --- File Indexing Tool ---
-
-export const indexFileTool = tool({
-  description: "Index a file for semantic search. Called by hooks when state files change.",
-  args: {
-    path: tool.schema.string().describe("File path"),
-    content: tool.schema.string().describe("File content"),
-    type: tool.schema.enum(["state", "project", "person", "meeting", "topic"]).describe("Content type"),
-  },
-  async execute(args) {
-    // For now, just trigger a rebuild - incremental indexing can be added later
-    await rebuildMemoryIndex();
-    return JSON.stringify({ success: true, message: `Indexed ${args.path}` });
-  },
-});
-
 // --- Related Items Tool ---
 
 export const getRelatedTool = tool({
@@ -462,7 +413,5 @@ export const memoryTools = {
   macrodata_schedule_once: scheduleOnceTool,
   macrodata_remove_reminder: removeReminderTool,
   macrodata_list_reminders: listRemindersTool,
-  macrodata_read: readStateFileTool,
-  macrodata_index_file: indexFileTool,
   macrodata_get_related: getRelatedTool,
 };

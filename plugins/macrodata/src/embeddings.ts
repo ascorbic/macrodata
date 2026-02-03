@@ -3,9 +3,12 @@
  *
  * Provides local embedding generation using all-MiniLM-L6-v2
  * No API calls, runs entirely locally
+ *
+ * Uses dynamic import to avoid slow startup from loading the large
+ * @xenova/transformers library at module load time.
  */
 
-import { pipeline, type FeatureExtractionPipeline } from "@xenova/transformers";
+import type { FeatureExtractionPipeline } from "@xenova/transformers";
 
 // Singleton pipeline instance (expensive to create)
 let embeddingPipeline: FeatureExtractionPipeline | null = null;
@@ -28,10 +31,13 @@ async function getEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
     return pipelineLoading;
   }
 
-  pipelineLoading = pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
-    // Use quantized model for faster loading
-    quantized: true,
-  });
+  pipelineLoading = (async () => {
+    const { pipeline } = await import("@xenova/transformers");
+    return pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+      // Use quantized model for faster loading
+      quantized: true,
+    });
+  })();
 
   try {
     embeddingPipeline = await pipelineLoading;

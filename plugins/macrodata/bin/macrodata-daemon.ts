@@ -42,6 +42,10 @@ function getPidFile() {
   return join(DAEMON_DIR, ".daemon.pid");
 }
 
+function getLogFile() {
+  return join(DAEMON_DIR, ".daemon.log");
+}
+
 function getPendingContext() {
   return join(getStateRoot(), ".pending-context");
 }
@@ -133,12 +137,14 @@ ${message}`;
 
 function log(message: string) {
   const ts = new Date().toISOString();
-  console.log(`[${ts}] ${message}`);
+  const line = `[${ts}] ${message}\n`;
+  appendFileSync(getLogFile(), line);
 }
 
 function logError(message: string) {
   const ts = new Date().toISOString();
-  console.error(`[${ts}] ${message}`);
+  const line = `[${ts}] ERROR: ${message}\n`;
+  appendFileSync(getLogFile(), line);
 }
 
 function writePendingContext(message: string) {
@@ -239,6 +245,7 @@ class MacrodataLocalDaemon {
     // Set up signal handlers
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
+    process.on("SIGHUP", () => this.reload());
 
     // Preload embedding model and update conversation index in background
     preloadModel()
@@ -478,6 +485,37 @@ class MacrodataLocalDaemon {
         log(`  ✗ ${basename(path)}: ${String(err)}`);
       }
     }
+  }
+
+  private reload() {
+    log("Reloading config (SIGHUP)");
+    log(`New state root: ${getStateRoot()}`);
+
+    // Stop existing watchers
+    if (this.watcher) {
+      void this.watcher.close();
+      this.watcher = null;
+    }
+    if (this.schedulesWatcher) {
+      void this.schedulesWatcher.close();
+      this.schedulesWatcher = null;
+    }
+
+    // Stop all cron jobs
+    for (const [_id, job] of this.cronJobs) {
+      job.stop();
+    }
+    this.cronJobs.clear();
+
+    // Ensure directories exist with new paths
+    ensureDirectories();
+
+    // Restart everything with new paths
+    this.loadAndStartSchedules();
+    this.watchRemindersDir();
+    this.startFileWatcher();
+
+    log("Reload complete");
   }
 
   private shutdown() {

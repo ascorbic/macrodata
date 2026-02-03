@@ -239,8 +239,39 @@ Use this pre-detected info during onboarding instead of running detection script
 
   if (!forCompaction) {
     sections.push(`## Schedules\n\n${schedulesFormatted}`);
+
+    // List state files
+    const stateDir = join(stateRoot, "state");
+    const stateFiles = existsSync(stateDir)
+      ? readdirSync(stateDir).filter(f => f.endsWith(".md")).map(f => `state/${f}`)
+      : [];
+
+    // List entity files
+    const entitiesDir = join(stateRoot, "entities");
+    const entityFiles: string[] = [];
+    if (existsSync(entitiesDir)) {
+      for (const subdir of ["people", "projects"]) {
+        const dir = join(entitiesDir, subdir);
+        if (existsSync(dir)) {
+          for (const f of readdirSync(dir).filter(f => f.endsWith(".md"))) {
+            entityFiles.push(`entities/${subdir}/${f}`);
+          }
+        }
+      }
+    }
+
+    const allFiles = [...stateFiles, ...entityFiles];
+    const filesFormatted = allFiles.length > 0
+      ? allFiles.map(f => `- ${f}`).join("\n")
+      : "_No files yet_";
+
     sections.push(
-      `## Paths\n\n- Root: \`${stateRoot}\`\n- State: \`${join(stateRoot, "state")}\`\n- Journal: \`${getJournalDir()}\``
+      `## Paths
+
+Root: \`${stateRoot}\`
+
+### Files
+${filesFormatted}`
     );
   }
 

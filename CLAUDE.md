@@ -6,44 +6,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 macrodata/
-├── plugins/
-│   ├── local/                  # Local file-based memory plugin (primary)
-│   │   ├── .claude-plugin/     # Plugin metadata
-│   │   ├── bin/                # Daemon and hook scripts
-│   │   ├── hooks/              # Plugin hooks config
-│   │   ├── skills/             # Plugin skills (e.g., onboarding)
-│   │   └── src/                # MCP server source
-│   │       ├── index.ts        # MCP server with tool definitions
-│   │       ├── indexer.ts      # Vectra indexing logic
-│   │       └── embeddings.ts   # Transformers.js embeddings
-│   └── cloud/                  # Cloud plugin (WIP)
-│       ├── .claude-plugin/
-│       ├── bin/
-│       └── hooks/
-├── workers/                    # Cloudflare Workers (WIP)
-│   └── macrodata/              # Cloud memory MCP server (has own package.json)
-└── marketplace.json            # Plugin marketplace config
+└── plugins/
+    └── local/                  # Local file-based memory plugin
+        ├── .claude-plugin/     # Plugin metadata
+        ├── bin/                # Daemon and hook scripts
+        ├── skills/             # Plugin skills (e.g., onboarding)
+        ├── opencode/           # OpenCode plugin variant
+        └── src/                # MCP server source
+            ├── index.ts        # MCP server with tool definitions
+            ├── indexer.ts      # Vectra indexing logic
+            └── embeddings.ts   # Transformers.js embeddings
 ```
 
 ## Build and Development Commands
 
 ```bash
-# Cloud worker (from workers/macrodata/)
-pnpm dev            # Start local dev server with wrangler
-pnpm deploy         # Deploy to Cloudflare Workers
-pnpm check          # Type check with tsc
-pnpm test           # Run tests
+# From plugins/local/
+bun install
+bun run start       # Run MCP server
 ```
 
 ## Architecture
 
-Macrodata provides persistent memory for AI coding agents. Two modes:
+Macrodata provides persistent memory for AI coding agents. File-based, fully offline.
 
-### Local Mode (Primary)
-
-**local** (`plugins/local/`) - File-based memory, fully offline.
-
-- `src/index.ts` - MCP server with 11 tools (get_context, log_journal, search_memory, etc.)
+**Source** (`plugins/local/`):
+- `src/index.ts` - MCP server with 11 tools (log_journal, search_memory, etc.)
 - `src/indexer.ts` - Vectra-based vector index for semantic search
 - `src/embeddings.ts` - Transformers.js embedding generation (BGE model)
 - `bin/macrodata-daemon.ts` - Background daemon for scheduled reminders
@@ -54,10 +42,3 @@ Macrodata provides persistent memory for AI coding agents. Two modes:
 - `entities/` - People, projects as markdown files
 - `journal/` - JSONL entries, date-partitioned
 - `.index/` - Vectra embeddings cache
-
-### Cloud Mode (WIP)
-
-**cloud** (`plugins/cloud/`) - Connects to hosted macrodata service.
-**macrodata** (`workers/macrodata/`) - Cloudflare Worker with Durable Objects.
-
-Cloud mode adds: multi-device sync, web search (Brave), background AI processing, external model routing via AI Gateway. See `workers/macrodata/README.md` for details.

@@ -13,12 +13,6 @@
       "source": "./plugins/local",
       "description": "Local file-based memory. Zero infrastructure, fully offline, semantic search.",
       "version": "0.1.0"
-    },
-    {
-      "name": "macrodata-cloud",
-      "source": "./plugins/cloud",
-      "description": "Cloud-hosted memory with multi-device sync (WIP).",
-      "version": "0.1.0"
     }
   ]
 }

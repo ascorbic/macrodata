@@ -85,9 +85,8 @@ The Claude Code plugin provides MCP tools and hooks:
 | Hook | Behavior |
 |------|----------|
 | `SessionStart` | Start daemon, inject context |
-| `PreCompact` | Auto-save conversation summary |
-| `SessionEnd` | Save summary if significant work done |
-| `PostToolUse` | Auto-log git commands and file changes |
+| `PromptSubmit` | Re-inject context if state files changed |
+| `PreCompact` | Index conversations, auto-save summary |
 
 ### OpenCode Plugin
 
@@ -124,26 +123,12 @@ Default location: `~/.config/macrodata`
 
 ```
 macrodata/
-├── plugins/
-│   ├── local/              # Claude Code plugin
-│   │   ├── src/            # MCP server
-│   │   ├── opencode/       # OpenCode plugin (published as opencode-macrodata)
-│   │   ├── hooks/          # Claude Code hooks
-│   │   └── bin/            # Daemon and scripts
-│   └── cloud/              # Cloud plugin (WIP)
-└── workers/
-    └── macrodata/          # Cloudflare Worker for cloud mode (WIP)
+└── plugins/
+    └── local/              # Claude Code plugin
+        ├── src/            # MCP server
+        ├── opencode/       # OpenCode plugin (published as opencode-macrodata)
+        └── bin/            # Daemon and scripts
 ```
-
-### Local vs Cloud
-
-| Aspect | Local | Cloud (WIP) |
-|--------|-------|-------------|
-| Storage | Local files | Cloudflare R2 + D1 |
-| Search | Vectra + Transformers.js | Vectorize |
-| Privacy | 100% local | Self-hosted |
-| Sync | Git (optional) | Multi-device |
-| Features | Full | + Web search, background AI |
 
 ## Development
 

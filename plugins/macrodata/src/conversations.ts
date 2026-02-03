@@ -296,7 +296,7 @@ function parseConversationFile(filePath: string, projectPath: string): Conversat
       }
     }
   } catch (err) {
-    console.error(`[Conversations] Failed to parse ${filePath}: ${err}`);
+    console.error(`[Conversations] Failed to parse ${filePath}: ${String(err)}`);
   }
 
   return exchanges;
@@ -648,7 +648,7 @@ export async function expandConversation(
   if (targetIdx === -1) {
     // Return last N messages if target not found
     return {
-      messages: messages.slice(-contextMessages).map(({ uuid, ...rest }) => rest),
+      messages: messages.slice(-contextMessages).map(({ uuid: _uuid, ...rest }) => rest),
       project,
       branch,
     };
@@ -659,7 +659,7 @@ export async function expandConversation(
   const end = Math.min(messages.length, start + contextMessages);
 
   return {
-    messages: messages.slice(start, end).map(({ uuid, ...rest }) => rest),
+    messages: messages.slice(start, end).map(({ uuid: _uuid, ...rest }) => rest),
     project,
     branch,
   };

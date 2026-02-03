@@ -88,16 +88,7 @@ function ensureDirectories() {
   }
 }
 
-function readFileOrEmpty(path: string): string {
-  try {
-    if (existsSync(path)) {
-      return readFileSync(path, "utf-8");
-    }
-  } catch {
-    // Ignore
-  }
-  return "";
-}
+
 
 function loadSchedules(): ScheduleStore {
   try {
@@ -281,7 +272,7 @@ server.tool(
         content: [
           {
             type: "text" as const,
-            text: `Search error: ${err}`,
+            text: `Search error: ${String(err)}`,
           },
         ],
       };
@@ -331,7 +322,7 @@ server.tool(
       }
     } catch (err) {
       return {
-        content: [{ type: "text" as const, text: `Failed to ${action} ${target} index: ${err}` }],
+        content: [{ type: "text" as const, text: `Failed to ${action} ${target} index: ${String(err)}` }],
       };
     }
   }
@@ -552,7 +543,7 @@ server.tool(
         content: [
           {
             type: "text" as const,
-            text: `Search error: ${err}`,
+            text: `Search error: ${String(err)}`,
           },
         ],
       };
@@ -608,7 +599,7 @@ server.tool(
         content: [
           {
             type: "text" as const,
-            text: `Failed to expand conversation: ${err}`,
+            text: `Failed to expand conversation: ${String(err)}`,
           },
         ],
       };

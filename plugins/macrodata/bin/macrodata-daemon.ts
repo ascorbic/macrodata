@@ -14,11 +14,11 @@
  */
 
 import { watch } from "chokidar";
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
-import { join, basename, relative } from "path";
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from "fs";
+import { join, basename } from "path";
 import { homedir } from "os";
 import { Cron } from "croner";
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { indexEntityFile, preloadModel } from "../src/indexer.js";
 import { getStateRoot, getEntitiesDir, getJournalDir, getIndexDir, getSchedulesFile } from "../src/config.js";
 
@@ -102,7 +102,7 @@ async function triggerAgent(
       return true;
     }
   } catch (err) {
-    log(`Failed to trigger ${agent}: ${err}`);
+    log(`Failed to trigger ${agent}: ${String(err)}`);
   }
 
   return false;
@@ -121,7 +121,7 @@ function writePendingContext(message: string) {
   try {
     appendFileSync(getPendingContext(), message + "\n");
   } catch (err) {
-    log(`Failed to write pending context: ${err}`);
+    log(`Failed to write pending context: ${String(err)}`);
   }
 }
 
@@ -143,7 +143,7 @@ function loadSchedules(): ScheduleStore {
       return JSON.parse(readFileSync(schedulesFile, "utf-8"));
     }
   } catch (err) {
-    log(`Failed to load schedules: ${err}`);
+    log(`Failed to load schedules: ${String(err)}`);
   }
   return { schedules: [] };
 }
@@ -152,7 +152,7 @@ function saveSchedules(store: ScheduleStore) {
   try {
     writeFileSync(getSchedulesFile(), JSON.stringify(store, null, 2));
   } catch (err) {
-    log(`Failed to save schedules: ${err}`);
+    log(`Failed to save schedules: ${String(err)}`);
   }
 }
 
@@ -286,12 +286,12 @@ class MacrodataLocalDaemon {
   private startCronJob(schedule: Schedule) {
     try {
       const job = new Cron(schedule.expression, () => {
-        this.fireSchedule(schedule);
+        void this.fireSchedule(schedule);
       });
       this.cronJobs.set(schedule.id, job);
       log(`Started cron job: ${schedule.id} (${schedule.expression})`);
     } catch (err) {
-      log(`Failed to start cron job ${schedule.id}: ${err}`);
+      log(`Failed to start cron job ${schedule.id}: ${String(err)}`);
     }
   }
 
@@ -299,14 +299,14 @@ class MacrodataLocalDaemon {
     try {
       const fireTime = new Date(schedule.expression);
       const job = new Cron(fireTime, () => {
-        this.fireSchedule(schedule);
+        void this.fireSchedule(schedule);
         // Remove one-shot after firing
         this.removeSchedule(schedule.id);
       });
       this.cronJobs.set(schedule.id, job);
       log(`Scheduled one-shot: ${schedule.id} at ${schedule.expression}`);
     } catch (err) {
-      log(`Failed to schedule one-shot ${schedule.id}: ${err}`);
+      log(`Failed to schedule one-shot ${schedule.id}: ${String(err)}`);
     }
   }
 
@@ -393,7 +393,7 @@ class MacrodataLocalDaemon {
       clearTimeout(this.reindexTimer);
     }
     this.reindexTimer = setTimeout(() => {
-      this.processReindexQueue();
+      void this.processReindexQueue();
     }, 1000);
   }
 
@@ -409,7 +409,7 @@ class MacrodataLocalDaemon {
         await indexEntityFile(path);
         log(`  ✓ ${basename(path)}`);
       } catch (err) {
-        log(`  ✗ ${basename(path)}: ${err}`);
+        log(`  ✗ ${basename(path)}: ${String(err)}`);
       }
     }
   }
@@ -419,18 +419,18 @@ class MacrodataLocalDaemon {
     this.shouldRun = false;
 
     // Stop all cron jobs
-    for (const [id, job] of this.cronJobs) {
+    for (const [_id, job] of this.cronJobs) {
       job.stop();
     }
     this.cronJobs.clear();
 
     // Stop file watchers
     if (this.watcher) {
-      this.watcher.close();
+      void this.watcher.close();
       this.watcher = null;
     }
     if (this.schedulesWatcher) {
-      this.schedulesWatcher.close();
+      void this.schedulesWatcher.close();
       this.schedulesWatcher = null;
     }
 

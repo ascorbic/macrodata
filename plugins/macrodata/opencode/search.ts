@@ -7,7 +7,7 @@
 import { LocalIndex } from "vectra";
 import { pipeline, type FeatureExtractionPipeline } from "@xenova/transformers";
 import { existsSync, readFileSync, readdirSync, mkdirSync } from "fs";
-import { join, basename } from "path";
+import { join } from "path";
 import { getStateRoot } from "./context.js";
 
 // Embedding pipeline singleton

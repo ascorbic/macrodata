@@ -222,8 +222,8 @@ export const rebuildMemoryIndexTool = tool({
   description: "Rebuild the semantic search index from scratch. Use if index seems stale or corrupted.",
   args: {},
   async execute() {
-    const memoryResult = await rebuildMemoryIndex();
-    const convResult = await rebuildConversationIndex();
+    await rebuildMemoryIndex();
+    await rebuildConversationIndex();
     const memoryStats = await getMemoryIndexStats();
     const convStats = await getConversationIndexStats();
 

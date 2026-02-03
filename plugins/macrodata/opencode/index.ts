@@ -60,7 +60,7 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
             );
           }
         } catch (err) {
-          console.error(`[Macrodata] Context injection error: ${err}`);
+          console.error(`[Macrodata] Context injection error: ${String(err)}`);
         }
       }
     },
@@ -75,7 +75,7 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
           console.error("[Macrodata] Injected context for compaction");
         }
       } catch (err) {
-        console.error(`[Macrodata] Compaction hook error: ${err}`);
+        console.error(`[Macrodata] Compaction hook error: ${String(err)}`);
       }
     },
 
@@ -113,7 +113,7 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
         }
       } catch (err) {
         // Don't let journaling errors break the flow
-        console.error(`[Macrodata] Auto-journal error: ${err}`);
+        console.error(`[Macrodata] Auto-journal error: ${String(err)}`);
       }
     },
 

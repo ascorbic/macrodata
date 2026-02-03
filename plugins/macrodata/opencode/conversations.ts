@@ -185,7 +185,7 @@ function* scanExchanges(): Generator<ConversationExchange> {
   const messageDir = join(OPENCODE_STORAGE, "message");
   if (!existsSync(messageDir)) return;
 
-  const projects = loadProjects();
+  const _projects = loadProjects();
   const sessionDirs = readdirSync(messageDir);
 
   for (const sessionId of sessionDirs) {

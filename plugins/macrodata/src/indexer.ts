@@ -379,7 +379,7 @@ export async function indexEntityFile(filePath: string): Promise<void> {
     await indexItems(items);
     console.error(`[Indexer] Indexed ${items.length} sections from ${basename(filePath)}`);
   } catch (err) {
-    console.error(`[Indexer] Failed to index ${filePath}: ${err}`);
+    console.error(`[Indexer] Failed to index ${filePath}: ${String(err)}`);
   }
 }
 

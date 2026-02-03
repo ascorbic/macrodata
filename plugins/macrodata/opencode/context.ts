@@ -5,7 +5,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, statSync } from "fs";
-import { homedir } from "os";
+
 import { join } from "path";
 import { getStateRoot, getJournalDir, getSchedulesFile } from "../src/config.js";
 

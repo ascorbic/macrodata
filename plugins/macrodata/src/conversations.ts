@@ -190,8 +190,8 @@ function isNoiseContent(content: string): boolean {
     return true;
   }
 
-  // Skip very short messages (likely just acknowledgments)
-  if (content.trim().length < 10) {
+  // Skip empty messages
+  if (content.trim().length < 1) {
     return true;
   }
 
@@ -274,7 +274,7 @@ function parseConversationFile(filePath: string, projectPath: string): Conversat
           // Found a user-assistant pair
           const assistantText = extractAssistantText(msg.message.content);
 
-          if (currentUser.text && assistantText) {
+          if (currentUser.text) {
             exchanges.push({
               id: `conv-${currentUser.msg.sessionId}-${currentUser.msg.uuid}`,
               userPrompt: currentUser.text.slice(0, 1000),

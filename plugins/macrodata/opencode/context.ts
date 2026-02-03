@@ -15,7 +15,7 @@ const sessionLastmod = new Map<string, Record<string, number>>();
 function getStateFilePaths(): string[] {
   const stateRoot = getStateRoot();
   return [
-    join(stateRoot, "identity.md"),
+    join(stateRoot, "state", "identity.md"),
     join(stateRoot, "state", "today.md"),
     join(stateRoot, "state", "human.md"),
     join(stateRoot, "state", "workspace.md"),
@@ -80,7 +80,7 @@ export function initializeStateRoot(): void {
   }
   
   // Create default files if they don't exist
-  const identityPath = join(stateRoot, "identity.md");
+  const identityPath = join(stateRoot, "state", "identity.md");
   if (!existsSync(identityPath)) {
     writeFileSync(identityPath, `# Identity
 
@@ -200,7 +200,7 @@ export async function formatContextForPrompt(
 ): Promise<string | null> {
   const { forCompaction = false } = options;
   const stateRoot = getStateRoot();
-  const identityPath = join(stateRoot, "identity.md");
+  const identityPath = join(stateRoot, "state", "identity.md");
   const isFirstRun = !existsSync(identityPath);
 
   // First run - return minimal context with onboarding pointer
@@ -208,8 +208,8 @@ export async function formatContextForPrompt(
     if (forCompaction) return null;
     
     // Get the plugin's skill path for manual loading
-    // From dist/ -> opencode/ -> skills/
-    const skillPath = join(import.meta.dirname, "..", "skills", "onboarding", "SKILL.md");
+    // Bun runs TS directly, so import.meta.dirname is the opencode/ folder
+    const skillPath = join(import.meta.dirname, "skills", "onboarding", "SKILL.md");
     
     return `[MACRODATA]
 

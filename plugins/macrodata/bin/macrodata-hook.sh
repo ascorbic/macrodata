@@ -31,7 +31,7 @@ JOURNAL_DIR="$STATE_ROOT/journal"
 LASTMOD_FILE="$STATE_ROOT/.context-lastmod.json"
 
 # State files
-IDENTITY="$STATE_ROOT/identity.md"
+IDENTITY="$STATE_ROOT/state/identity.md"
 TODAY="$STATE_ROOT/state/today.md"
 HUMAN="$STATE_ROOT/state/human.md"
 WORKSPACE="$STATE_ROOT/state/workspace.md"

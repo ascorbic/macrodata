@@ -43,8 +43,8 @@ Or create `~/.config/opencode/macrodata.json`:
 
 ```
 $MACRODATA_ROOT/
-├── identity.md          # Agent persona
 ├── state/
+│   ├── identity.md      # Agent persona
 │   ├── today.md         # Daily focus
 │   ├── human.md         # User info
 │   ├── workspace.md     # Current project context

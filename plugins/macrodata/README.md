@@ -25,8 +25,8 @@ Local file-based memory for **Claude Code**. Zero infrastructure, fully offline.
 
 ```
 ~/.config/macrodata/
-├── identity.md          # Agent persona
 ├── state/
+│   ├── identity.md      # Agent persona
 │   ├── today.md         # Daily focus
 │   ├── human.md         # User profile
 │   ├── workspace.md     # Current project context
@@ -96,13 +96,13 @@ The plugin uses Claude Code hooks for automatic behavior:
 
 ## First Run
 
-On first run (no identity.md exists), the plugin will prompt you to set up your identity:
+On first run (no `state/identity.md` exists), the plugin will prompt you to set up your identity:
 
 1. What should the agent call you?
 2. Any particular way you'd like it to work with you?
 3. What are you working on right now?
 
-The agent will create your identity.md and initial state files.
+The agent will create your `state/identity.md` and initial state files.
 
 ## Configuration
 

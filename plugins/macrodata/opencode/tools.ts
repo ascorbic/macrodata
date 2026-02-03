@@ -375,7 +375,7 @@ export const readStateFileTool = tool({
 
     const stateRoot = getStateRoot();
     const fileMap: Record<string, string> = {
-      identity: join(stateRoot, "identity.md"),
+      identity: join(stateRoot, "state", "identity.md"),
       today: join(stateRoot, "state", "today.md"),
       human: join(stateRoot, "state", "human.md"),
       workspace: join(stateRoot, "state", "workspace.md"),

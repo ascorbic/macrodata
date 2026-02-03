@@ -38,7 +38,7 @@ Offer location options. Always include:
 
 Only include a code directory option if `codeDirs` from the detection was non-empty.
 
-If they choose a non-default location, write the config to `~/.config/opencode/macrodata.json`:
+If they choose a non-default location, write the config to `~/.config/macrodata/config.json`:
 
 ```json
 {

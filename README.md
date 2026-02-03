@@ -1,6 +1,6 @@
 # Macrodata
 
-A Claude Code and OpenCode plugin that gives it the tools of a stateful agent, packaged so you can still use it for normal work. Work in Claude Code or OpenCode as you normally would and Macrodata quietly adds useful context and powerful memory and autonomy features.
+Give Claude Code and OpenCode persistent, self-maintaining memory and autonomous scheduling.
 
 > This is experimental software. Use at your own risk.
 
@@ -9,17 +9,16 @@ A Claude Code and OpenCode plugin that gives it the tools of a stateful agent, p
 - **Memory distillation** - consolidates learnings into structured knowledge
 - **Dream time** - overnight reflection, pattern recognition, self-improvement
 - **Uses your existing tools** – no new APIs or third-party skills needed, but if you have them, it can use them.
-- **No security nightmares** - runs with your existing tools and security rules. No external APIs or third-party skills. Memory stays in local files.
-
-Local-only. Everything stored as markdown and JSON you can read and edit.
+- **No security nightmares** - runs with your existing security rules. No external APIs or third-party skills.
+- **Local-only** - all memories stored as markdown and JSON you can read and edit.
 
 ## What It Does
 
-Learns and remembers who you are, what you're working on, and how you like to work. Analyses your past conversations to build context. Puts working memory into every session so you never start from scratch.
+Learns and remembers who you are, what you're working on, and how you like to work. Analyzes your past conversations to build context. Puts working memory into every session so you never start from scratch.
 
 ### Working Memory
 
-Every session starts with context injection - your identity, current projects, daily focus, and recent activity. The agent knows who you are before you type anything.
+Every session starts with context injection - your identity, current projects, daily focus, and recent activity. The agent knows who you are and what you're doing before you type anything.
 
 State files track what matters right now:
 - **identity.md** - how the agent should behave with you

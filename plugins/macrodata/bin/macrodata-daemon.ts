@@ -470,21 +470,39 @@ class MacrodataLocalDaemon {
   }
 
   private startFileWatcher() {
+    const stateRoot = getStateRoot();
     const entitiesDir = getEntitiesDir();
-    const watchPaths = [join(entitiesDir, "**", "*.md")];
+    const stateDir = join(stateRoot, "state");
 
-    this.watcher = watch(watchPaths, {
+    // Watch both state files and entities
+    this.watcher = watch([stateDir, entitiesDir], {
       ignoreInitial: true,
       persistent: true,
     });
 
     this.watcher.on("all", (event, path) => {
+      if (!path.endsWith(".md")) return;
+      if (event !== "add" && event !== "change") return;
+
       log(`File ${event}: ${path}`);
-      // TODO: Trigger reindex of the changed file
-      this.queueReindex(path);
+
+      // State files (working memory) - inject full content
+      if (path.startsWith(stateDir)) {
+        try {
+          const content = readFileSync(path, "utf-8");
+          const filename = basename(path);
+          writePendingContext(`[macrodata] State file updated: ${filename}\n${content}`);
+        } catch {}
+      }
+      // Entity files - inject just the name
+      else if (path.startsWith(entitiesDir)) {
+        const relative = path.slice(entitiesDir.length + 1);
+        writePendingContext(`[macrodata] Entity updated: ${relative}`);
+        this.queueReindex(path);
+      }
     });
 
-    log(`Watching for entity changes in: ${entitiesDir}`);
+    log(`Watching for state/entity changes in: ${stateRoot}`);
   }
 
   private reindexQueue: Set<string> = new Set();

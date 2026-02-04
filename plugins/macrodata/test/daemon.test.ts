@@ -94,7 +94,7 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
     setupMinimalState(ctx);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     // Stop daemon if running
     const pidFile = join(ctx.root, ".daemon.pid");
     if (existsSync(pidFile)) {

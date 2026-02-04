@@ -307,7 +307,7 @@ class MacrodataLocalDaemon {
       this.reloadSchedules();
       try {
         const schedule = JSON.parse(readFileSync(path, "utf-8")) as Schedule;
-        writePendingContext(`[macrodata] Schedule added: ${schedule.id} - ${schedule.description}`);
+        writePendingContext(`<macrodata-update type="schedule-added" id="${schedule.id}">${schedule.description}</macrodata-update>`);
       } catch {}
     });
 
@@ -321,7 +321,7 @@ class MacrodataLocalDaemon {
       this.reloadSchedules();
       try {
         const schedule = JSON.parse(readFileSync(path, "utf-8")) as Schedule;
-        writePendingContext(`[macrodata] Schedule updated: ${schedule.id} - ${schedule.description}`);
+        writePendingContext(`<macrodata-update type="schedule-updated" id="${schedule.id}">${schedule.description}</macrodata-update>`);
       } catch {}
     });
 
@@ -329,7 +329,7 @@ class MacrodataLocalDaemon {
       if (!path.endsWith(".json")) return;
       const id = basename(path, ".json");
       log(`Reminder removed: ${id}`);
-      writePendingContext(`[macrodata] Schedule removed: ${id}`);
+      writePendingContext(`<macrodata-update type="schedule-removed" id="${id}" />`);
       const job = this.cronJobs.get(id);
       if (job) {
         job.stop();
@@ -491,13 +491,13 @@ class MacrodataLocalDaemon {
         try {
           const content = readFileSync(path, "utf-8");
           const filename = basename(path);
-          writePendingContext(`[macrodata] State file updated: ${filename}\n${content}`);
+          writePendingContext(`<macrodata-update type="state" file="${filename}">\n${content}\n</macrodata-update>`);
         } catch {}
       }
       // Entity files - inject just the name
       else if (path.startsWith(entitiesDir)) {
         const relative = path.slice(entitiesDir.length + 1);
-        writePendingContext(`[macrodata] Entity updated: ${relative}`);
+        writePendingContext(`<macrodata-update type="entity" file="${relative}" />`);
         this.queueReindex(path);
       }
     });

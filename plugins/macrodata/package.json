@@ -7,6 +7,7 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "daemon": "bun run bin/macrodata-daemon.ts",
+    "test": "bun test",
     "check": "oxlint --type-aware --type-check",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",

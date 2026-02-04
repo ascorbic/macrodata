@@ -23,8 +23,8 @@ else
     STATE_ROOT="$DEFAULT_ROOT"
 fi
 
-# Output locations (PID file always in ~/.config/macrodata for singleton daemon)
-PIDFILE="$HOME/.config/macrodata/.daemon.pid"
+# Output locations (PID file now follows STATE_ROOT for testing isolation)
+PIDFILE="$STATE_ROOT/.daemon.pid"
 PENDING_CONTEXT="$STATE_ROOT/.pending-context"
 LOGFILE="$STATE_ROOT/.daemon.log"
 JOURNAL_DIR="$STATE_ROOT/journal"

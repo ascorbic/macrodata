@@ -37,14 +37,17 @@ async function findExecutable(name: string): Promise<string | null> {
 }
 
 // Daemon-specific path helpers
-const DAEMON_DIR = join(homedir(), ".config", "macrodata");
+// Use MACRODATA_ROOT for all daemon files (PID, log) to support testing with isolated directories
+function getDaemonDir() {
+  return getStateRoot();
+}
 
 function getPidFile() {
-  return join(DAEMON_DIR, ".daemon.pid");
+  return join(getDaemonDir(), ".daemon.pid");
 }
 
 function getLogFile() {
-  return join(DAEMON_DIR, ".daemon.log");
+  return join(getDaemonDir(), ".daemon.log");
 }
 
 function getPendingContext() {
@@ -158,7 +161,7 @@ function writePendingContext(message: string) {
 
 function ensureDirectories() {
   const entitiesDir = getEntitiesDir();
-  const dirs = [DAEMON_DIR, getStateRoot(), getIndexDir(), entitiesDir, getJournalDir(), getRemindersDir(), join(entitiesDir, "people"), join(entitiesDir, "projects")];
+  const dirs = [getDaemonDir(), getStateRoot(), getIndexDir(), entitiesDir, getJournalDir(), getRemindersDir(), join(entitiesDir, "people"), join(entitiesDir, "projects")];
   for (const dir of dirs) {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });

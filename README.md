@@ -1,5 +1,9 @@
 # Macrodata
 
+<p align="center">
+  <img src="logo.png" alt="Macrodata" width="400">
+</p>
+
 Give Claude Code and OpenCode persistent, self-maintaining memory and autonomous scheduling.
 
 > This is experimental software. Use at your own risk.

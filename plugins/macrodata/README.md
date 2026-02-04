@@ -1,5 +1,9 @@
 # Macrodata
 
+<p align="center">
+  <img src="../../logo.png" alt="Macrodata" width="400">
+</p>
+
 A Claude Code and OpenCode plugin that gives it the tools of a stateful agent, packaged so you can still use it for normal work.
 
 - **Layered memory** - identity, journal, semantic search across sessions

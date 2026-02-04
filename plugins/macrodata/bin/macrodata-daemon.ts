@@ -16,7 +16,6 @@
 import { watch } from "chokidar";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 import { join, basename } from "path";
-import { homedir } from "os";
 import { Cron } from "croner";
 import { spawn, execSync } from "child_process";
 import { indexEntityFile, preloadModel } from "../src/indexer.js";
@@ -178,7 +177,7 @@ async function updateAllConversationIndexes() {
       log(`Claude Code conversations: +${claude.filesUpdated} files (${claude.exchangeCount} total)`);
     }
   } catch (err) {
-    logError(`Claude Code conversation index failed: ${err}`);
+    logError(`Claude Code conversation index failed: ${String(err)}`);
   }
 
   // Update OpenCode conversations
@@ -188,7 +187,7 @@ async function updateAllConversationIndexes() {
       log(`OpenCode conversations: +${opencode.newCount} (${opencode.totalCount} total)`);
     }
   } catch (err) {
-    logError(`OpenCode conversation index failed: ${err}`);
+    logError(`OpenCode conversation index failed: ${String(err)}`);
   }
 }
 

@@ -10,7 +10,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, afterAll } from "bun:test";
 import { spawn, execSync } from "child_process";
-import { existsSync, readFileSync, writeFileSync, rmSync, readdirSync } from "fs";
+import { existsSync, readFileSync, rmSync } from "fs";
 import { join, dirname } from "path";
 import {
   createTestContext,
@@ -123,7 +123,7 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       expect(existsSync(pidFile)).toBe(true);
 
       const writtenPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-      expect(writtenPid).toBe(pid);
+      expect(writtenPid).toBe(pid as number);
     });
 
     test("writes log file to MACRODATA_ROOT", async () => {
@@ -162,13 +162,13 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       expect(pid1).not.toBeNull();
 
       // Try to start another daemon in same directory
-      const pid2 = await startDaemon(ctx);
+      await startDaemon(ctx);
 
       // Second daemon should not start (returns null or same pid)
       // The PID file should still contain the original PID
       const pidFile = join(ctx.root, ".daemon.pid");
       const currentPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-      expect(currentPid).toBe(pid1);
+      expect(currentPid).toBe(pid1 as number);
     });
   });
 

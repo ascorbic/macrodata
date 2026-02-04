@@ -1,5 +1,11 @@
 # @macrodata/opencode
 
+## 0.1.3
+
+### Patch Changes
+
+- [#5](https://github.com/ascorbic/macrodata/pull/5) [`acb2066`](https://github.com/ascorbic/macrodata/commit/acb20667b40435839f81359aba8a0904a394b43a) Thanks [@ascorbic](https://github.com/ascorbic)! - Include USAGE.md in published package
+
 ## 0.1.2
 
 ### Patch Changes

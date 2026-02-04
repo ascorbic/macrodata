@@ -428,10 +428,6 @@ class MacrodataLocalDaemon {
   private async fireSchedule(schedule: Schedule) {
     log(`Firing schedule: ${schedule.id} - ${schedule.description}`);
 
-    // Always write to pending context (for hooks to pick up)
-    const message = `[macrodata] Reminder: ${schedule.description}\n${schedule.payload}`;
-    writePendingContext(message);
-
     // Trigger the agent specified in the schedule
     const triggered = await triggerAgent(schedule.agent, schedule.payload, {
       model: schedule.model,

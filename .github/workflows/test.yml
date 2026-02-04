@@ -22,3 +22,7 @@ jobs:
       - name: Lint
         run: bun run check
         working-directory: plugins/macrodata
+
+      - name: Test
+        run: bun test
+        working-directory: plugins/macrodata

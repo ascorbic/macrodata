@@ -25,7 +25,7 @@ try {
   await import("@xenova/transformers");
   embeddingsAvailable = true;
 } catch {
-  console.warn("[Test] Embeddings not available - skipping indexer tests (run 'pnpm approve-builds' to enable sharp)");
+  console.warn("[Test] Embeddings not available - skipping indexer tests");
 }
 
 // Only import indexer if embeddings work
@@ -44,18 +44,22 @@ describe.skipIf(!embeddingsAvailable)("indexer", () => {
   });
 
   describe("indexJournalEntry", () => {
-    test("indexes a single journal entry", async () => {
-      const entry = {
-        timestamp: new Date().toISOString(),
-        topic: "test-topic",
-        content: "This is a test journal entry about integration testing",
-      };
+    test(
+      "indexes a single journal entry",
+      async () => {
+        const entry = {
+          timestamp: new Date().toISOString(),
+          topic: "test-topic",
+          content: "This is a test journal entry about integration testing",
+        };
 
-      await indexer!.indexJournalEntry(entry);
+        await indexer!.indexJournalEntry(entry);
 
-      const stats = await indexer!.getIndexStats();
-      expect(stats.itemCount).toBe(1);
-    });
+        const stats = await indexer!.getIndexStats();
+        expect(stats.itemCount).toBe(1);
+      },
+      { timeout: 30000 }
+    );
 
     test("indexed entries are searchable", async () => {
       const entry = {

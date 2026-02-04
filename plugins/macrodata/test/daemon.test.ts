@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, afterAll } from "bun:test";
-import { spawn, execSync } from "child_process";
+import { spawn } from "child_process";
 import { existsSync, readFileSync, rmSync } from "fs";
 import { join, dirname } from "path";
 import {
@@ -25,7 +25,7 @@ try {
   await import("@xenova/transformers");
   daemonAvailable = true;
 } catch {
-  console.warn("[Test] Daemon tests skipped - sharp not built (run 'pnpm approve-builds' to enable)");
+  console.warn("[Test] Daemon tests skipped - sharp not built");
 }
 
 // Track all started daemons for cleanup
@@ -104,7 +104,7 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
         // Wait for it to stop
         let attempts = 0;
         while (isDaemonRunning(pid) && attempts < 10) {
-          execSync("sleep 0.1");
+          await Bun.sleep(100);
           attempts++;
         }
       } catch {
@@ -131,7 +131,7 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       expect(pid).not.toBeNull();
 
       // Give it a moment to write logs
-      execSync("sleep 0.5");
+      await Bun.sleep(500);
 
       const logFile = join(ctx.root, ".daemon.log");
       expect(existsSync(logFile)).toBe(true);
@@ -152,7 +152,7 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       expect(pid).not.toBeNull();
 
       // Daemon should recreate them
-      execSync("sleep 0.5");
+      await Bun.sleep(500);
       expect(existsSync(entitiesDir)).toBe(true);
       expect(existsSync(journalDir)).toBe(true);
     });
@@ -183,10 +183,10 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       // Send SIGTERM
       stopDaemon(pid!);
 
-      // Wait for cleanup
+      // Wait for process to die (longer timeout for cleanup)
       let attempts = 0;
-      while (existsSync(pidFile) && attempts < 20) {
-        execSync("sleep 0.1");
+      while (isDaemonRunning(pid!) && attempts < 50) {
+        await Bun.sleep(100);
         attempts++;
       }
 
@@ -210,7 +210,7 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       expect(pid).not.toBeNull();
 
       // Check logs for schedule loading
-      execSync("sleep 0.5");
+      await Bun.sleep(500);
       const logFile = join(ctx.root, ".daemon.log");
       const log = readFileSync(logFile, "utf-8");
       expect(log).toContain("Started cron job: test-schedule");
@@ -221,7 +221,7 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       expect(pid).not.toBeNull();
 
       // Give daemon time to start
-      execSync("sleep 0.5");
+      await Bun.sleep(500);
 
       // Add a new reminder while daemon is running
       addReminder(ctx, "new-schedule", {
@@ -232,7 +232,7 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       });
 
       // Give file watcher time to detect
-      execSync("sleep 1");
+      await Bun.sleep(1000);
 
       const logFile = join(ctx.root, ".daemon.log");
       const log = readFileSync(logFile, "utf-8");
@@ -250,14 +250,14 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       const pid = await startDaemon(ctx);
       expect(pid).not.toBeNull();
 
-      execSync("sleep 0.5");
+      await Bun.sleep(500);
 
       // Remove the reminder
       const reminderFile = join(ctx.root, "reminders", "remove-me.json");
       rmSync(reminderFile);
 
       // Give file watcher time to detect
-      execSync("sleep 1");
+      await Bun.sleep(1000);
 
       const logFile = join(ctx.root, ".daemon.log");
       const log = readFileSync(logFile, "utf-8");
@@ -271,12 +271,12 @@ describe.skipIf(!daemonAvailable)("daemon", () => {
       const pid = await startDaemon(ctx);
       expect(pid).not.toBeNull();
 
-      execSync("sleep 0.5");
+      await Bun.sleep(500);
 
       // Send SIGHUP
       process.kill(pid!, "SIGHUP");
 
-      execSync("sleep 0.5");
+      await Bun.sleep(500);
 
       const logFile = join(ctx.root, ".daemon.log");
       const log = readFileSync(logFile, "utf-8");

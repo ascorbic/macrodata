@@ -1,5 +1,17 @@
 # @macrodata/opencode
 
+## 0.1.2
+
+### Patch Changes
+
+- [`bdec5e7`](https://github.com/ascorbic/macrodata/commit/bdec5e7ab8f7e1537ff63fdcc64672a836aa63e8) Thanks [@ascorbic](https://github.com/ascorbic)! - Improve context injection and fix schedules display
+
+  - Use XML tags for context sections (better parsing)
+  - Fix schedules to read from reminders directory
+  - Add shared USAGE.md with explicit guidance
+  - Dynamic entity directory scanning
+  - Notify pending context on state/entity file changes
+
 ## 0.1.1
 
 ### Patch Changes

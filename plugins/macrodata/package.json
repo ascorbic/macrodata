@@ -62,6 +62,7 @@
   "files": [
     "opencode",
     "src",
-    "bin"
+    "bin",
+    "USAGE.md"
   ]
 }

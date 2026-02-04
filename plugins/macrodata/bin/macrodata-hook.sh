@@ -163,19 +163,24 @@ get_usage() {
 }
 
 get_schedules() {
-    local schedules_file="$STATE_ROOT/.schedules.json"
-    
-    if [ ! -f "$schedules_file" ]; then
+    local reminders_dir="$STATE_ROOT/reminders"
+
+    if [ ! -d "$reminders_dir" ]; then
         echo "_No active schedules_"
         return
     fi
-    
-    local schedules=$(jq -r '.schedules[] | "- \(.description) (\(.type): \(.expression))"' "$schedules_file" 2>/dev/null)
-    
+
+    local schedules=""
+    for f in "$reminders_dir"/*.json; do
+        [ -f "$f" ] || continue
+        local line=$(jq -r '"- \(.description) (\(.type): \(.expression))"' "$f" 2>/dev/null)
+        [ -n "$line" ] && schedules="$schedules$line\n"
+    done
+
     if [ -z "$schedules" ]; then
         echo "_No active schedules_"
     else
-        echo "$schedules"
+        echo -e "$schedules"
     fi
 }
 

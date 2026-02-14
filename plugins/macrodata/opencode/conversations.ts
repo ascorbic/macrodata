@@ -2,21 +2,25 @@
  * OpenCode Conversation Indexer
  *
  * Indexes past OpenCode sessions for semantic search.
- * Structure: ~/.local/share/opencode/storage/
- *   - message/{sessionID}/msg_{id}.json - Message metadata
- *   - part/{messageID}/prt_{id}.json - Message content
- *   - project/{hash}.json - Project metadata
+ * Reads from the OpenCode SQLite database at ~/.local/share/opencode/opencode.db
+ *
+ * Schema (relevant tables):
+ *   - session: id, project_id, title, time_created, time_updated, parent_id
+ *   - message: id, session_id, time_created, data (JSON with role, agent, etc.)
+ *   - part: id, message_id, session_id, data (JSON with type, text, etc.)
+ *   - project: id, worktree
  */
 
-import { existsSync, readFileSync, readdirSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
+import { Database } from "bun:sqlite";
 import { LocalIndex } from "vectra";
 import { pipeline, type FeatureExtractionPipeline } from "@xenova/transformers";
 import { getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
 
-const OPENCODE_STORAGE = join(homedir(), ".local", "share", "opencode", "storage");
+const OPENCODE_DB_PATH = join(homedir(), ".local", "share", "opencode", "opencode.db");
 const EMBEDDING_DIMENSIONS = 384;
 
 // Reuse embedding pipeline from search.ts
@@ -90,27 +94,6 @@ async function getConversationIndex(): Promise<LocalIndex> {
   return convIndex;
 }
 
-interface ProjectInfo {
-  id: string;
-  worktree: string;
-  name: string;
-}
-
-interface MessageInfo {
-  id: string;
-  sessionID: string;
-  role: "user" | "assistant";
-  time?: { created: number };
-  agent?: string;
-}
-
-interface PartInfo {
-  id: string;
-  messageID: string;
-  type: string;
-  text?: string;
-}
-
 export interface ConversationExchange {
   id: string;
   userPrompt: string;
@@ -129,169 +112,179 @@ export interface ConversationSearchResult {
 }
 
 /**
- * Load project mappings
+ * Open the OpenCode SQLite database (read-only)
  */
-function loadProjects(): Map<string, ProjectInfo> {
-  const projects = new Map<string, ProjectInfo>();
-  const projectDir = join(OPENCODE_STORAGE, "project");
-
-  if (!existsSync(projectDir)) return projects;
-
-  const files = readdirSync(projectDir).filter((f) => f.endsWith(".json"));
-  for (const file of files) {
-    try {
-      const data = JSON.parse(readFileSync(join(projectDir, file), "utf-8"));
-      projects.set(data.id, {
-        id: data.id,
-        worktree: data.worktree,
-        name: basename(data.worktree),
-      });
-    } catch {
-      // Skip
-    }
+function openDb(): Database | null {
+  if (!existsSync(OPENCODE_DB_PATH)) {
+    logger.log(`OpenCode database not found at ${OPENCODE_DB_PATH}`);
+    return null;
   }
 
-  return projects;
+  try {
+    return new Database(OPENCODE_DB_PATH, { readonly: true });
+  } catch (err) {
+    logger.error(`Failed to open OpenCode database: ${err}`);
+    return null;
+  }
+}
+
+interface ExchangeRow {
+  user_msg_id: string;
+  session_id: string;
+  user_time: number;
+  user_text: string;
+  assistant_text: string;
+  worktree: string | null;
 }
 
 /**
- * Get text content from message parts
+ * Query exchanges from the SQLite database.
+ *
+ * This runs a single query that:
+ * 1. Finds user messages (role = 'user') that aren't compaction summaries
+ * 2. Finds the next assistant message in the same session
+ * 3. Aggregates text parts for both user and assistant messages
+ * 4. Joins to project for worktree path
+ * 5. Excludes subtask sessions (parent_id IS NULL)
  */
-function getMessageText(messageId: string): string {
-  const partsDir = join(OPENCODE_STORAGE, "part", messageId);
-  if (!existsSync(partsDir)) return "";
+function queryExchanges(db: Database, sinceMs?: number): ExchangeRow[] {
+  const whereClause = sinceMs ? "AND um.time_created > ?" : "";
+  const params = sinceMs ? [sinceMs] : [];
 
-  const parts: string[] = [];
-  const files = readdirSync(partsDir).filter((f) => f.endsWith(".json"));
+  // Get user-assistant pairs with their text content.
+  // We use a CTE to match each user message with its subsequent assistant message,
+  // then aggregate text parts for both.
+  const sql = `
+    WITH user_messages AS (
+      SELECT
+        m.id AS user_msg_id,
+        m.session_id,
+        m.time_created AS user_time,
+        m.data AS user_data,
+        -- Find the next assistant message by time in the same session
+        (
+          SELECT am.id FROM message am
+          WHERE am.session_id = m.session_id
+            AND am.time_created > m.time_created
+            AND json_extract(am.data, '$.role') = 'assistant'
+          ORDER BY am.time_created ASC
+          LIMIT 1
+        ) AS assistant_msg_id
+      FROM message m
+      JOIN session s ON s.id = m.session_id
+      WHERE json_extract(m.data, '$.role') = 'user'
+        AND s.parent_id IS NULL
+        AND json_extract(m.data, '$.summary') IS NULL
+        ${whereClause}
+    )
+    SELECT
+      um.user_msg_id,
+      um.session_id,
+      um.user_time,
+      COALESCE(
+        GROUP_CONCAT(
+          CASE WHEN up.message_id = um.user_msg_id AND json_extract(up.data, '$.type') = 'text'
+            THEN json_extract(up.data, '$.text')
+          END,
+          '\n'
+        ),
+        ''
+      ) AS user_text,
+      COALESCE(
+        GROUP_CONCAT(
+          CASE WHEN up.message_id = um.assistant_msg_id AND json_extract(up.data, '$.type') = 'text'
+            THEN json_extract(up.data, '$.text')
+          END,
+          '\n'
+        ),
+        ''
+      ) AS assistant_text,
+      p.worktree
+    FROM user_messages um
+    LEFT JOIN part up ON up.message_id IN (um.user_msg_id, um.assistant_msg_id)
+    LEFT JOIN session s ON s.id = um.session_id
+    LEFT JOIN project p ON p.id = s.project_id
+    WHERE um.assistant_msg_id IS NOT NULL
+    GROUP BY um.user_msg_id
+    HAVING user_text != ''
+    ORDER BY um.user_time ASC
+  `;
 
-  for (const file of files) {
-    try {
-      const part: PartInfo = JSON.parse(readFileSync(join(partsDir, file), "utf-8"));
-      if (part.type === "text" && part.text) {
-        parts.push(part.text);
-      }
-    } catch {
-      // Skip
-    }
-  }
-
-  return parts.join("\n").slice(0, 2000); // Limit length
-}
-
-/**
- * Scan all OpenCode sessions and extract exchanges
- */
-function* scanExchanges(): Generator<ConversationExchange> {
-  const messageDir = join(OPENCODE_STORAGE, "message");
-  if (!existsSync(messageDir)) return;
-
-  const _projects = loadProjects();
-  const sessionDirs = readdirSync(messageDir);
-
-  for (const sessionId of sessionDirs) {
-    const sessionPath = join(messageDir, sessionId);
-    if (!existsSync(sessionPath)) continue;
-
-    // Get all messages in this session
-    const msgFiles = readdirSync(sessionPath)
-      .filter((f) => f.endsWith(".json"))
-      .sort(); // Sort by ID for chronological order
-
-    const messages: Array<MessageInfo & { text: string }> = [];
-
-    for (const file of msgFiles) {
-      try {
-        const msg: MessageInfo = JSON.parse(readFileSync(join(sessionPath, file), "utf-8"));
-        const text = getMessageText(msg.id);
-        if (text) {
-          messages.push({ ...msg, text });
-        }
-      } catch {
-        // Skip
-      }
-    }
-
-    // Extract user-assistant pairs
-    for (let i = 0; i < messages.length - 1; i++) {
-      const user = messages[i];
-      const assistant = messages[i + 1];
-
-      if (user.role === "user" && assistant.role === "assistant") {
-        // Try to find project from session
-        // OpenCode doesn't directly link session to project in message metadata
-        // We'd need to check session storage or use current directory heuristics
-        const projectPath = ""; // TODO: Could parse from session metadata
-        const projectName = projectPath ? basename(projectPath) : "unknown";
-
-        // Skip if timestamp is invalid
-        const created = user.time?.created;
-        if (!created) continue;
-        const ts = new Date(created);
-        if (isNaN(ts.getTime())) continue;
-
-        yield {
-          id: `oc-${sessionId}-${user.id}`,
-          userPrompt: user.text.slice(0, 1000),
-          assistantSummary: assistant.text.slice(0, 500),
-          project: projectName,
-          projectPath,
-          timestamp: ts.toISOString(),
-          sessionId,
-          messageId: user.id,
-        };
-
-        i++; // Skip the assistant message
-      }
-    }
+  try {
+    return db.prepare(sql).all(...params) as ExchangeRow[];
+  } catch (err) {
+    logger.error(`Query failed: ${err}`);
+    return [];
   }
 }
 
 /**
- * Rebuild conversation index
+ * Convert raw DB rows to ConversationExchange objects
+ */
+function rowsToExchanges(rows: ExchangeRow[]): ConversationExchange[] {
+  return rows.map((row) => {
+    const worktree = row.worktree || "";
+    const projectName = worktree ? basename(worktree) : "unknown";
+
+    return {
+      id: `oc-${row.session_id}-${row.user_msg_id}`,
+      userPrompt: row.user_text.slice(0, 1000),
+      assistantSummary: row.assistant_text.slice(0, 500),
+      project: projectName,
+      projectPath: worktree,
+      timestamp: new Date(row.user_time).toISOString(),
+      sessionId: row.session_id,
+      messageId: row.user_msg_id,
+    };
+  });
+}
+
+/**
+ * Rebuild conversation index from scratch
  */
 export async function rebuildConversationIndex(): Promise<{ exchangeCount: number }> {
   logger.log("Rebuilding OpenCode conversation index...");
   const startTime = Date.now();
 
-  const exchanges: ConversationExchange[] = [];
-  for (const exchange of scanExchanges()) {
-    exchanges.push(exchange);
+  const db = openDb();
+  if (!db) return { exchangeCount: 0 };
+
+  try {
+    const rows = queryExchanges(db);
+    const exchanges = rowsToExchanges(rows);
+
+    logger.log(`Found ${exchanges.length} exchanges`);
+    if (exchanges.length === 0) return { exchangeCount: 0 };
+
+    const texts = exchanges.map((e) => e.userPrompt);
+    logger.log("Generating embeddings...");
+    const vectors = await embedBatch(texts);
+
+    const idx = await getConversationIndex();
+
+    for (let i = 0; i < exchanges.length; i++) {
+      const ex = exchanges[i];
+      await idx.upsertItem({
+        id: ex.id,
+        vector: vectors[i],
+        metadata: {
+          userPrompt: ex.userPrompt,
+          assistantSummary: ex.assistantSummary,
+          project: ex.project,
+          projectPath: ex.projectPath,
+          timestamp: ex.timestamp,
+          sessionId: ex.sessionId,
+          messageId: ex.messageId,
+        },
+      });
+    }
+
+    const duration = Date.now() - startTime;
+    logger.log(`Conversation index rebuilt in ${duration}ms`);
+    return { exchangeCount: exchanges.length };
+  } finally {
+    db.close();
   }
-
-  logger.log(`Found ${exchanges.length} exchanges`);
-
-  if (exchanges.length === 0) {
-    return { exchangeCount: 0 };
-  }
-
-  // Embed user prompts (what we search on)
-  const texts = exchanges.map((e) => e.userPrompt);
-  logger.log("Generating embeddings...");
-  const vectors = await embedBatch(texts);
-
-  const idx = await getConversationIndex();
-
-  for (let i = 0; i < exchanges.length; i++) {
-    const ex = exchanges[i];
-    await idx.upsertItem({
-      id: ex.id,
-      vector: vectors[i],
-      metadata: {
-        userPrompt: ex.userPrompt,
-        assistantSummary: ex.assistantSummary,
-        project: ex.project,
-        projectPath: ex.projectPath,
-        timestamp: ex.timestamp,
-        sessionId: ex.sessionId,
-        messageId: ex.messageId,
-      },
-    });
-  }
-
-  const duration = Date.now() - startTime;
-  logger.log(`Conversation index rebuilt in ${duration}ms`);
-
-  return { exchangeCount: exchanges.length };
 }
 
 /**
@@ -299,8 +292,8 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
  */
 function getTimeWeight(timestamp: string): number {
   const ts = new Date(timestamp);
-  if (isNaN(ts.getTime())) return 0.5; // Default weight for invalid dates
-  
+  if (isNaN(ts.getTime())) return 0.5;
+
   const age = Date.now() - ts.getTime();
   const dayMs = 24 * 60 * 60 * 1000;
 
@@ -386,49 +379,65 @@ export async function updateConversationIndex(): Promise<{ newCount: number; tot
   logger.log("Updating OpenCode conversation index...");
   const startTime = Date.now();
 
-  const idx = await getConversationIndex();
-  const existingItems = await idx.listItems();
-  const existingIds = new Set(existingItems.map(item => item.id));
+  const db = openDb();
+  if (!db) return { newCount: 0, totalCount: 0 };
 
-  // Collect only new exchanges
-  const newExchanges: ConversationExchange[] = [];
-  for (const exchange of scanExchanges()) {
-    if (!existingIds.has(exchange.id)) {
-      newExchanges.push(exchange);
+  try {
+    const idx = await getConversationIndex();
+    const existingItems = await idx.listItems();
+    const existingIds = new Set(existingItems.map((item) => item.id));
+
+    // Find the most recent timestamp in the index to narrow the query
+    let latestMs = 0;
+    for (const item of existingItems) {
+      const meta = item.metadata as Record<string, string>;
+      if (meta.timestamp) {
+        const ms = new Date(meta.timestamp).getTime();
+        if (ms > latestMs) latestMs = ms;
+      }
     }
+
+    // Query only exchanges after the latest indexed timestamp (with some overlap for safety)
+    const sinceMs = latestMs > 0 ? latestMs - 60_000 : undefined;
+    const rows = queryExchanges(db, sinceMs);
+    const allExchanges = rowsToExchanges(rows);
+
+    // Filter to truly new exchanges
+    const newExchanges = allExchanges.filter((ex) => !existingIds.has(ex.id));
+
+    logger.log(`Found ${newExchanges.length} new exchanges (${existingIds.size} already indexed)`);
+
+    if (newExchanges.length === 0) {
+      return { newCount: 0, totalCount: existingIds.size };
+    }
+
+    const texts = newExchanges.map((e) => e.userPrompt);
+    logger.log(`Generating embeddings for ${texts.length} new exchanges...`);
+    const vectors = await embedBatch(texts);
+
+    for (let i = 0; i < newExchanges.length; i++) {
+      const ex = newExchanges[i];
+      await idx.upsertItem({
+        id: ex.id,
+        vector: vectors[i],
+        metadata: {
+          userPrompt: ex.userPrompt,
+          assistantSummary: ex.assistantSummary,
+          project: ex.project,
+          projectPath: ex.projectPath,
+          timestamp: ex.timestamp,
+          sessionId: ex.sessionId,
+          messageId: ex.messageId,
+        },
+      });
+    }
+
+    const duration = Date.now() - startTime;
+    const totalCount = existingIds.size + newExchanges.length;
+    logger.log(`Added ${newExchanges.length} exchanges in ${duration}ms (total: ${totalCount})`);
+
+    return { newCount: newExchanges.length, totalCount };
+  } finally {
+    db.close();
   }
-
-  logger.log(`Found ${newExchanges.length} new exchanges (${existingIds.size} already indexed)`);
-
-  if (newExchanges.length === 0) {
-    return { newCount: 0, totalCount: existingIds.size };
-  }
-
-  // Embed only new exchanges
-  const texts = newExchanges.map((e) => e.userPrompt);
-  logger.log(`Generating embeddings for ${texts.length} new exchanges...`);
-  const vectors = await embedBatch(texts);
-
-  for (let i = 0; i < newExchanges.length; i++) {
-    const ex = newExchanges[i];
-    await idx.upsertItem({
-      id: ex.id,
-      vector: vectors[i],
-      metadata: {
-        userPrompt: ex.userPrompt,
-        assistantSummary: ex.assistantSummary,
-        project: ex.project,
-        projectPath: ex.projectPath,
-        timestamp: ex.timestamp,
-        sessionId: ex.sessionId,
-        messageId: ex.messageId,
-      },
-    });
-  }
-
-  const duration = Date.now() - startTime;
-  const totalCount = existingIds.size + newExchanges.length;
-  logger.log(`Added ${newExchanges.length} exchanges in ${duration}ms (total: ${totalCount})`);
-
-  return { newCount: newExchanges.length, totalCount };
 }

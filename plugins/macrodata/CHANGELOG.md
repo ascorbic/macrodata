@@ -1,5 +1,11 @@
 # @macrodata/opencode
 
+## 0.2.1
+
+### Patch Changes
+
+- [#12](https://github.com/ascorbic/macrodata/pull/12) [`a8906f5`](https://github.com/ascorbic/macrodata/commit/a8906f5c98db2c16fe0d44f29c8d9ed339909d23) Thanks [@ascorbic](https://github.com/ascorbic)! - Update distill skill for SQLite session storage format
+
 ## 0.2.0
 
 ### Minor Changes

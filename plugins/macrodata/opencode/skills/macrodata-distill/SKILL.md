@@ -9,33 +9,77 @@ Process today's conversations to extract actionable knowledge. This is the core 
 
 **Important:** This runs as a coordinator. Spawn sub-agents for each conversation to avoid loading full transcripts into your context.
 
+## Storage Format
+
+OpenCode stores all session data in a SQLite database at `~/.local/share/opencode/opencode.db`.
+
+**Schema:**
+- `session` — id, project_id, parent_id, title, time_created, time_updated
+- `message` — id, session_id, time_created, data (JSON: role, agent, modelID, etc.)
+- `part` — id, message_id, session_id, time_created, data (JSON: type, text, etc.)
+- `project` — id, worktree, name
+
+**Part types:** text, tool, step-start, step-finish, patch, reasoning, compaction, file, subtask
+
+**Key JSON paths:**
+- `message.data` → `$.role` (user/assistant), `$.summary` (set on compaction messages)
+- `part.data` → `$.type` (text/tool/etc.), `$.text` (for text parts)
+
 ## Process
 
 ### 1. Find Today's Sessions
 
-OpenCode stores messages in `~/.local/share/opencode/storage/message/{sessionID}/`.
-
-List session directories with recent activity:
+Query the SQLite database for sessions with activity today. Exclude subtask sessions (parent_id IS NOT NULL).
 
 ```bash
-find ~/.local/share/opencode/storage/message -type d -mindepth 1 -maxdepth 1 -mtime -1 2>/dev/null
+sqlite3 ~/.local/share/opencode/opencode.db "
+  SELECT s.id, s.title, p.worktree, s.time_created
+  FROM session s
+  LEFT JOIN project p ON p.id = s.project_id
+  WHERE s.parent_id IS NULL
+    AND s.time_updated > unixepoch('now', '-1 day') * 1000
+  ORDER BY s.time_updated DESC
+"
 ```
 
 ### 2. Process Each Session
 
-For **each** session directory, spawn a sub-agent with the Task tool:
+For **each** session, spawn a sub-agent with the Task tool:
 
 ```
-Task(subagent_type="general-purpose", prompt=`
-Read the OpenCode session at {sessionPath}.
+Task(subagent_type="general", prompt=`
+Read an OpenCode conversation from the SQLite database at ~/.local/share/opencode/opencode.db.
 
-Message structure:
-- Messages: {sessionPath}/msg_*.json (contains role, timestamp)
-- Content: ~/.local/share/opencode/storage/part/{messageID}/prt_*.json (contains text)
+Session ID: {sessionId}
+Session title: {sessionTitle}
+Project: {projectWorktree}
+
+Use this query to extract the conversation (user prompts and assistant text responses):
+
+sqlite3 ~/.local/share/opencode/opencode.db "
+  SELECT
+    m.id AS message_id,
+    json_extract(m.data, '$.role') AS role,
+    m.time_created,
+    GROUP_CONCAT(
+      CASE WHEN json_extract(p.data, '$.type') = 'text'
+        THEN json_extract(p.data, '$.text')
+      END,
+      char(10)
+    ) AS text_content
+  FROM message m
+  JOIN part p ON p.message_id = m.id
+  WHERE m.session_id = '{sessionId}'
+    AND json_extract(m.data, '$.role') IN ('user', 'assistant')
+    AND json_extract(m.data, '$.summary') IS NULL
+  GROUP BY m.id
+  HAVING text_content IS NOT NULL AND text_content != ''
+  ORDER BY m.time_created ASC
+"
 
 Filter to actual conversation content:
 - Include: user messages, assistant text responses
-- Exclude: tool calls, tool results, system content
+- Exclude: tool calls, tool results, system content, compaction summaries
 
 Extract and return as JSON:
 {

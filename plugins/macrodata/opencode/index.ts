@@ -2,14 +2,12 @@
  * OpenCode Macrodata Plugin
  *
  * Provides persistent local memory for OpenCode agents:
- * - Context injection on first message
+ * - Context injection via system prompt transform
  * - Compaction hook to preserve memory context
- * - Auto-journaling of git commands and file changes
  * - Custom `macrodata` tool for memory operations
  */
 
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
-import type { Part } from "@opencode-ai/sdk";
 import { existsSync, mkdirSync, cpSync, readdirSync, readFileSync, openSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -125,9 +123,6 @@ function installSkills(): void {
   }
 }
 
-// Track which sessions have had initial context injected
-const injectedSessions = new Set<string>();
-
 export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
   // Initialize state directories
   initializeStateRoot();
@@ -142,47 +137,20 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
   installSkills();
 
   return {
-    // Inject context on first message and any pending updates from daemon
-    "chat.message": async (input, output) => {
-      const isFirstMessage = !injectedSessions.has(input.sessionID);
-      const pendingContext = consumePendingContext();
-
-      // Inject pending context updates from daemon (schedule changes, state file updates)
-      if (pendingContext) {
-        const pendingPart: Part = {
-          id: `macrodata-pending-${Date.now()}`,
-          sessionID: input.sessionID,
-          messageID: output.message.id,
-          type: "text",
-          text: pendingContext,
-          synthetic: true,
-        };
-        output.parts.unshift(pendingPart);
-      }
-
-      // Inject full context on first message
-      if (isFirstMessage) {
-        injectedSessions.add(input.sessionID);
-
-        try {
-          const memoryContext = await formatContextForPrompt({ client: ctx.client });
-
-          if (memoryContext) {
-            const contextPart: Part = {
-              id: `macrodata-context-${Date.now()}`,
-              sessionID: input.sessionID,
-              messageID: output.message.id,
-              type: "text",
-              text: memoryContext,
-              synthetic: true,
-            };
-
-            // Prepend context to message parts
-            output.parts.unshift(contextPart);
-          }
-        } catch (err) {
-          logger.error(`Context injection error: ${String(err)}`);
+    // Inject memory context into system prompt
+    "experimental.chat.system.transform": async (_input, output) => {
+      try {
+        const pendingContext = consumePendingContext();
+        if (pendingContext) {
+          output.system.push(pendingContext);
         }
+
+        const memoryContext = await formatContextForPrompt({ client: ctx.client });
+        if (memoryContext) {
+          output.system.push(memoryContext);
+        }
+      } catch (err) {
+        logger.error(`System context injection error: ${String(err)}`);
       }
     },
 

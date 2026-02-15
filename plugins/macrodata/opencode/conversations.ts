@@ -135,6 +135,7 @@ interface ExchangeRow {
   user_text: string;
   assistant_text: string;
   worktree: string | null;
+  directory: string | null;
 }
 
 /**
@@ -174,7 +175,6 @@ function queryExchanges(db: Database, sinceMs?: number): ExchangeRow[] {
       JOIN session s ON s.id = m.session_id
       WHERE json_extract(m.data, '$.role') = 'user'
         AND s.parent_id IS NULL
-        AND json_extract(m.data, '$.summary') IS NULL
         ${whereClause}
     )
     SELECT
@@ -199,7 +199,8 @@ function queryExchanges(db: Database, sinceMs?: number): ExchangeRow[] {
         ),
         ''
       ) AS assistant_text,
-      p.worktree
+      p.worktree,
+      s.directory
     FROM user_messages um
     LEFT JOIN part up ON up.message_id IN (um.user_msg_id, um.assistant_msg_id)
     LEFT JOIN session s ON s.id = um.session_id
@@ -223,15 +224,20 @@ function queryExchanges(db: Database, sinceMs?: number): ExchangeRow[] {
  */
 function rowsToExchanges(rows: ExchangeRow[]): ConversationExchange[] {
   return rows.map((row) => {
-    const worktree = row.worktree || "";
-    const projectName = worktree ? basename(worktree) : "unknown";
+    // Use project worktree, but fall back to session directory for "global" sessions
+    // where worktree is "/" (the root filesystem, not a real project)
+    const worktree = row.worktree && row.worktree !== "/" ? row.worktree : "";
+    const directory = row.directory || "";
+    const projectPath = worktree || directory;
+    const name = projectPath ? basename(projectPath) : "";
+    const projectName = name || "unknown";
 
     return {
       id: `oc-${row.session_id}-${row.user_msg_id}`,
       userPrompt: row.user_text.slice(0, 1000),
       assistantSummary: row.assistant_text.slice(0, 500),
       project: projectName,
-      projectPath: worktree,
+      projectPath,
       timestamp: new Date(row.user_time).toISOString(),
       sessionId: row.session_id,
       messageId: row.user_msg_id,
@@ -239,10 +245,27 @@ function rowsToExchanges(rows: ExchangeRow[]): ConversationExchange[] {
   });
 }
 
+// Guard against concurrent rebuilds
+let rebuildInProgress: Promise<{ exchangeCount: number }> | null = null;
+
 /**
  * Rebuild conversation index from scratch
  */
 export async function rebuildConversationIndex(): Promise<{ exchangeCount: number }> {
+  if (rebuildInProgress) {
+    logger.log("Conversation index rebuild already in progress, waiting...");
+    return rebuildInProgress;
+  }
+
+  rebuildInProgress = doRebuildConversationIndex();
+  try {
+    return await rebuildInProgress;
+  } finally {
+    rebuildInProgress = null;
+  }
+}
+
+async function doRebuildConversationIndex(): Promise<{ exchangeCount: number }> {
   logger.log("Rebuilding OpenCode conversation index...");
   const startTime = Date.now();
 
@@ -256,11 +279,20 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
     logger.log(`Found ${exchanges.length} exchanges`);
     if (exchanges.length === 0) return { exchangeCount: 0 };
 
+    // Generate all embeddings BEFORE touching the index
     const texts = exchanges.map((e) => e.userPrompt);
-    logger.log("Generating embeddings...");
+    logger.log(`Generating embeddings for ${texts.length} exchanges...`);
     const vectors = await embedBatch(texts);
+    logger.log(`Embeddings generated, inserting into index...`);
 
+    // Only delete after embeddings succeed
+    // Reset singleton since deleteIndex invalidates the cached instance
+    convIndex = null;
     const idx = await getConversationIndex();
+    if (await idx.isIndexCreated()) {
+      await idx.deleteIndex();
+    }
+    await idx.createIndex();
 
     for (let i = 0; i < exchanges.length; i++) {
       const ex = exchanges[i];
@@ -277,11 +309,18 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
           messageId: ex.messageId,
         },
       });
+
+      if (i > 0 && i % 500 === 0) {
+        logger.log(`  ...inserted ${i}/${exchanges.length}`);
+      }
     }
 
     const duration = Date.now() - startTime;
-    logger.log(`Conversation index rebuilt in ${duration}ms`);
+    logger.log(`Conversation index rebuilt: ${exchanges.length} exchanges in ${duration}ms`);
     return { exchangeCount: exchanges.length };
+  } catch (err) {
+    logger.error(`Conversation index rebuild failed: ${err}`);
+    throw err;
   } finally {
     db.close();
   }

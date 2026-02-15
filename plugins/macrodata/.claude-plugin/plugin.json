@@ -1,6 +1,6 @@
 {
 	"name": "macrodata",
-	"version": "0.1.3",
+	"version": "0.2.0",
 	"description": "Stateful agent tools for Claude Code. Learns who you are, remembers what you're working on, schedules tasks, maintains itself.",
 	"author": {
 		"name": "Matt Kane",

@@ -9,6 +9,8 @@ Dedicated time for deep reflection and self-improvement. Runs automatically late
 
 **Important:** This runs in the background with no user interaction. Think freely, research openly, update files directly.
 
+**Important:** Always re-read a file immediately before editing it, even if you read it earlier in the session. Claude Code's read tracking requires a recent read before each edit.
+
 ## Purpose
 
 This is your time to think beyond immediate tasks. Reflect on your role, learn new things, notice patterns, and improve how you work.

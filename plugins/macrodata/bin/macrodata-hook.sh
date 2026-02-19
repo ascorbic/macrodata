@@ -56,7 +56,7 @@ start_daemon() {
     mkdir -p "$STATE_ROOT"
     # Start daemon in background, redirect output to log
     # Note: daemon writes its own PID file, we don't write it here
-    MACRODATA_ROOT="$STATE_ROOT" nohup "$BUN" run "$DAEMON" >> "$LOGFILE" 2>&1 &
+    MACRODATA_ROOT="$STATE_ROOT" nohup env -u CLAUDECODE "$BUN" run "$DAEMON" >> "$LOGFILE" 2>&1 &
 
     # Wait briefly for daemon to write PID file (up to 2 seconds)
     local attempts=0

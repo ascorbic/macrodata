@@ -19,7 +19,8 @@ This processes all conversation files, spawns sub-agents for extraction, and wri
 
 **Check if distill already ran today:**
 ```bash
-grep "distill-summary" ~/.config/macrodata/journal/$(date +%Y-%m-%d).jsonl 2>/dev/null
+MACRODATA_ROOT="${MACRODATA_ROOT:-$HOME/.config/macrodata}"
+grep "distill-summary" "$MACRODATA_ROOT/journal/$(date +%Y-%m-%d).jsonl" 2>/dev/null
 ```
 
 If not found, invoke `/distill`. If already ran, skip to step 2.
@@ -28,7 +29,8 @@ If not found, invoke `/distill`. If already ran, skip to step 2.
 
 Read the distilled entries from today's journal:
 ```bash
-grep '"topic":"distilled"' ~/.config/macrodata/journal/$(date +%Y-%m-%d).jsonl 2>/dev/null | jq -r '.content'
+MACRODATA_ROOT="${MACRODATA_ROOT:-$HOME/.config/macrodata}"
+grep '"topic":"distilled"' "$MACRODATA_ROOT/journal/$(date +%Y-%m-%d).jsonl" 2>/dev/null | jq -r '.content'
 ```
 
 Use these to inform state file updates.

@@ -92,3 +92,15 @@ log_journal(topic="maintenance", content="[what was updated, what was pruned, an
 ```
 
 Note anything uncertain that should be confirmed with the user next session.
+
+### 8. Commit Memory Changes
+
+After all writes are complete, commit the memory state:
+
+```bash
+MACRODATA_ROOT="${MACRODATA_ROOT:-$HOME/.config/macrodata}"
+cd "$MACRODATA_ROOT"
+git checkout main 2>/dev/null || git checkout -b main
+git add -A
+git diff --cached --quiet || git commit -m "memory maintenance $(date +%Y-%m-%d)"
+```

@@ -109,6 +109,18 @@ log_journal(topic="distill-summary", content="Processed N conversations. Extract
 }
 ```
 
+### 4. Commit Memory Changes
+
+After all writes are complete, commit the memory state:
+
+```bash
+MACRODATA_ROOT="${MACRODATA_ROOT:-$HOME/.config/macrodata}"
+cd "$MACRODATA_ROOT"
+git checkout main 2>/dev/null || git checkout -b main
+git add -A
+git diff --cached --quiet || git commit -m "distill $(date +%Y-%m-%d)"
+```
+
 ## Notes
 
 - Sub-agents should be spawned in parallel for efficiency

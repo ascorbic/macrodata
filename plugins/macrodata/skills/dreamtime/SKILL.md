@@ -107,3 +107,13 @@ Write a dreamtime journal entry summarizing:
 topic: dreamtime
 content: [key reflections, what was researched, what was updated]
 ```
+
+Then commit the memory state:
+
+```bash
+MACRODATA_ROOT="${MACRODATA_ROOT:-$HOME/.config/macrodata}"
+cd "$MACRODATA_ROOT"
+git checkout main 2>/dev/null || git checkout -b main
+git add -A
+git diff --cached --quiet || git commit -m "dreamtime $(date +%Y-%m-%d)"
+```

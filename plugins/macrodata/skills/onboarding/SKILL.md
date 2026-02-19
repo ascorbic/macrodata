@@ -87,6 +87,28 @@ Then create the directory structure:
 - `<root>/entities/projects/`
 - `<root>/topics/`
 
+Then initialize git for memory versioning:
+
+```bash
+cd "<root>"
+
+# Create .gitignore for runtime/generated files
+cat > .gitignore << 'EOF'
+.index/
+.daemon.log
+.daemon.pid
+.pending-context
+.claude-context.md
+.context-lastmod.json
+.DS_Store
+EOF
+
+git init
+git checkout -b main
+git add .gitignore
+git commit -m "initial: macrodata setup"
+```
+
 ### Phase 3: Human Profile
 
 Use the info from the detection script to pre-populate.

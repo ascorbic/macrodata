@@ -9,6 +9,8 @@ Scheduled maintenance to keep memory current and useful. Runs automatically at e
 
 **Important:** This runs in the background with no user interaction. Do not ask questions - make decisions and note uncertainties in the journal.
 
+**Important:** Always re-read a file immediately before editing it, even if you read it earlier in the session. Claude Code's read tracking requires a recent read before each edit.
+
 ## Process
 
 ### 1. Run Distillation

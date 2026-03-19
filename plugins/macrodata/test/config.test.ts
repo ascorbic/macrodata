@@ -6,7 +6,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { createTestContext, type TestContext } from "./helpers";
-import { getStateRoot, getStateDir, getEntitiesDir, getJournalDir, getIndexDir, getRemindersDir } from "../src/config";
+import { getStateRoot, getStateDir, getEntitiesDir, getJournalDir, getIndexDir, getRemindersDir, getEnabledAgents } from "../src/config";
 
 describe("config", () => {
   let ctx: TestContext;
@@ -58,5 +58,9 @@ describe("config", () => {
     // Restore original context
     process.env.MACRODATA_ROOT = originalRoot;
     expect(getStateRoot()).toBe(originalRoot);
+  });
+
+  test("getEnabledAgents defaults to default/build/plan", () => {
+    expect(getEnabledAgents()).toEqual(["default", "build", "plan"]);
   });
 });

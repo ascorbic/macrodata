@@ -13,6 +13,7 @@ import {
   getRecentJournal,
   getRecentSummaries,
   saveConversationSummary,
+  updateHumanProfile,
 } from "./journal.js";
 import {
   searchMemory,
@@ -110,11 +111,40 @@ export const logJournalTool = tool({
 export const getRecentJournalTool = tool({
   description: "Retrieve recent journal entries for context",
   args: {
-    count: tool.schema.number().optional().describe("Number of entries to retrieve (default: 40)"),
+    count: tool.schema.number().optional().describe("Number of entries to retrieve (default: 10)"),
+    mode: tool.schema.enum(["summary", "full"]).optional().describe("Return compact summaries (default) or full entries"),
+    maxChars: tool.schema.number().optional().describe("Maximum characters per entry in summary mode (default: 200)"),
   },
   async execute(args) {
-    const entries = getRecentJournal(args.count || 40);
+    const entries = getRecentJournal(args.count || 10, undefined, {
+      mode: (args.mode as "summary" | "full" | undefined) || "summary",
+      maxChars: args.maxChars || 200,
+    });
     return JSON.stringify({ success: true, entries });
+  },
+});
+
+export const updateHumanProfileTool = tool({
+  description:
+    "Update the human profile (human.md) with a durable fact about the user. Use this when the user asks you to remember something about themselves.",
+  args: {
+    section: tool.schema.string().describe("The section heading to update (for example: Basics, Location, Preferences)"),
+    content: tool.schema.string().describe("The fact to add as a bullet in that section"),
+  },
+  async execute(args) {
+    if (!args.section || !args.content) {
+      return JSON.stringify({ success: false, error: "Requires 'section' and 'content'" });
+    }
+
+    updateHumanProfile({
+      section: args.section,
+      content: args.content,
+    });
+
+    return JSON.stringify({
+      success: true,
+      message: `Updated human profile section: ${args.section}`,
+    });
   },
 });
 
@@ -404,6 +434,7 @@ export const getRelatedTool = tool({
 export const memoryTools = {
   macrodata_log_journal: logJournalTool,
   macrodata_get_recent_journal: getRecentJournalTool,
+  macrodata_update_human_profile: updateHumanProfileTool,
   macrodata_save_conversation_summary: saveConversationSummaryTool,
   macrodata_get_recent_summaries: getRecentSummariesTool,
   macrodata_search_memory: searchMemoryTool,

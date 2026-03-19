@@ -249,47 +249,6 @@ function extractStub(content: string, fallback: string): string {
   return `${compact.slice(0, 217)}...`;
 }
 
-function extractSection(content: string, heading: string): string | null {
-  const pattern = new RegExp(`##\\s*${heading}\\s*\\n([\\s\\S]*?)(?:\\n##\\s|$)`, "i");
-  const match = content.match(pattern);
-  return match?.[1]?.trim() || null;
-}
-
-function extractFirstBullet(sectionContent: string): string | null {
-  const lines = sectionContent
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    if (line.startsWith("- ")) {
-      return line.slice(2).trim();
-    }
-  }
-
-  return null;
-}
-
-function extractHumanStub(content: string): string {
-  if (!content.trim()) return "_Unknown_";
-
-  const name = content.match(/^\s*-\s*\*\*Name:\*\*\s*(.+)$/m)?.[1]?.trim();
-  const timezone = content.match(/^\s*-\s*\*\*Timezone:\*\*\s*(.+)$/m)?.[1]?.trim();
-  const locationSection = extractSection(content, "Location");
-  const location = locationSection ? extractFirstBullet(locationSection) : null;
-
-  const parts = [
-    name ? `Name: ${name}` : null,
-    timezone ? `Timezone: ${timezone}` : null,
-    location ? `Location: ${location}` : null,
-  ].filter(Boolean);
-
-  if (parts.length > 0) {
-    return parts.join(" | ");
-  }
-
-  return extractStub(content, "_Unknown_");
-}
 
 function ensureAnchoredStateFile(stateRoot: string): void {
   const anchoredStatePath = join(stateRoot, "state", "state.md");
@@ -516,11 +475,6 @@ Use this pre-detected info during onboarding instead of running detection script
   appendSection(
     "static",
     `<macrodata-today-stub>\n${extractStub(today, "_Empty_")}\n</macrodata-today-stub>`,
-    true,
-  );
-  appendSection(
-    "static",
-    `<macrodata-human-stub>\n${extractHumanStub(human)}\n</macrodata-human-stub>`,
     true,
   );
 

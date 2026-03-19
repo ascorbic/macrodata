@@ -12,8 +12,10 @@
 import { LocalIndex } from "vectra";
 import { join, basename } from "path";
 import { readFileSync, readdirSync, existsSync, mkdirSync } from "fs";
+import { createHash } from "crypto";
 import { embed, embedBatch, preloadModel as preloadEmbeddings } from "./embeddings.js";
 import { getIndexDir, getEntitiesDir, getJournalDir } from "./config.js";
+import { listJsonlFiles, readJsonlFile, resolveJsonlPath } from "./jsonl.js";
 
 // Item types for filtering
 export type MemoryItemType = "journal" | "person" | "project";
@@ -39,6 +41,27 @@ export interface SearchResult {
 // Cached index instance with path tracking
 let index: LocalIndex | null = null;
 let indexPath: string | null = null;
+const INDEX_EMBEDDING_BATCH_SIZE = 96;
+
+function createStableSectionId(type: MemoryItemType, filename: string, sectionTitle: string, occurrence: number): string {
+  const digest = createHash("sha1")
+    .update(`${filename}::${sectionTitle.toLowerCase()}::${occurrence}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `${type}-${filename}-${digest}`;
+}
+
+async function deleteItemsBySource(source: string): Promise<void> {
+  const idx = await getIndex();
+  const items = await idx.listItems();
+
+  for (const item of items) {
+    const metadata = item.metadata as Record<string, unknown>;
+    if (metadata.source === source) {
+      await idx.deleteItem(item.id);
+    }
+  }
+}
 
 /**
  * Get or create the vector index
@@ -102,23 +125,27 @@ export async function indexItems(items: MemoryItem[]): Promise<void> {
   if (items.length === 0) return;
 
   const idx = await getIndex();
-  const vectors = await embedBatch(items.map((i) => i.content));
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const metadata: Record<string, string | number | boolean> = {
-      type: item.type,
-      content: item.content,
-      source: item.source,
-    };
-    if (item.section) metadata.section = item.section;
-    if (item.timestamp) metadata.timestamp = item.timestamp;
+  for (let i = 0; i < items.length; i += INDEX_EMBEDDING_BATCH_SIZE) {
+    const chunk = items.slice(i, i + INDEX_EMBEDDING_BATCH_SIZE);
+    const vectors = await embedBatch(chunk.map((item) => item.content));
 
-    await idx.upsertItem({
-      id: item.id,
-      vector: vectors[i],
-      metadata,
-    });
+    for (let j = 0; j < chunk.length; j++) {
+      const item = chunk[j];
+      const metadata: Record<string, string | number | boolean> = {
+        type: item.type,
+        content: item.content,
+        source: item.source,
+      };
+      if (item.section) metadata.section = item.section;
+      if (item.timestamp) metadata.timestamp = item.timestamp;
+
+      await idx.upsertItem({
+        id: item.id,
+        vector: vectors[j],
+        metadata,
+      });
+    }
   }
 }
 
@@ -173,32 +200,31 @@ export async function searchMemory(
 /**
  * Parse journal files and return items for indexing
  */
-function parseJournalForIndexing(): MemoryItem[] {
+async function parseJournalForIndexing(): Promise<MemoryItem[]> {
   const items: MemoryItem[] = [];
   const journalDir = getJournalDir();
 
-  if (!existsSync(journalDir)) return items;
-
-  const files = readdirSync(journalDir).filter((f) => f.endsWith(".jsonl"));
+  const files = listJsonlFiles(journalDir);
 
   for (const file of files) {
     try {
-      const content = readFileSync(join(journalDir, file), "utf-8");
-      const lines = content.trim().split("\n").filter(Boolean);
-
-      for (let i = 0; i < lines.length; i++) {
-        try {
-          const entry = JSON.parse(lines[i]);
-          items.push({
-            id: `journal-${file}-${i}`,
-            type: "journal",
-            content: `[${entry.topic}] ${entry.content}`,
-            source: file,
-            timestamp: entry.timestamp,
-          });
-        } catch {
-          // Skip malformed lines
+      const stats = await readJsonlFile<{ topic: string; content: string; timestamp?: string }>(
+        resolveJsonlPath(journalDir, file),
+        {
+          onItem(entry, lineNumber) {
+            items.push({
+              id: `journal-${file}-${lineNumber - 1}`,
+              type: "journal",
+              content: `[${entry.topic}] ${entry.content}`,
+              source: file,
+              timestamp: entry.timestamp,
+            });
+          },
         }
+      );
+
+      if (stats.malformedLines > 0) {
+        console.warn(`[Indexer] Skipped ${stats.malformedLines} malformed line(s) in journal file ${file}`);
       }
     } catch {
       // Skip unreadable files
@@ -239,6 +265,7 @@ function parseEntitiesForIndexing(subdir: "people" | "projects", type: MemoryIte
       }
 
       // Each section
+      const titleOccurrences = new Map<string, number>();
       for (let i = 1; i < sections.length; i++) {
         const section = sections[i];
         const firstLine = section.split("\n")[0];
@@ -246,8 +273,12 @@ function parseEntitiesForIndexing(subdir: "people" | "projects", type: MemoryIte
         const sectionContent = section.slice(firstLine.length).trim();
 
         if (sectionContent) {
+          const normalizedTitle = sectionTitle.toLowerCase();
+          const occurrence = (titleOccurrences.get(normalizedTitle) ?? 0) + 1;
+          titleOccurrences.set(normalizedTitle, occurrence);
+
           items.push({
-            id: `${type}-${filename}-${i}`,
+            id: createStableSectionId(type, filename, sectionTitle, occurrence),
             type,
             content: `## ${sectionTitle}\n\n${sectionContent}`,
             source: `${subdir}/${file}`,
@@ -274,7 +305,7 @@ export async function rebuildIndex(): Promise<{ itemCount: number }> {
 
   // 1. Index journal entries
   console.log("[Indexer] Parsing journal...");
-  allItems.push(...parseJournalForIndexing());
+  allItems.push(...(await parseJournalForIndexing()));
 
   // 2. Index people
   console.log("[Indexer] Parsing people...");
@@ -283,6 +314,12 @@ export async function rebuildIndex(): Promise<{ itemCount: number }> {
   // 3. Index projects
   console.log("[Indexer] Parsing projects...");
   allItems.push(...parseEntitiesForIndexing("projects", "project"));
+
+  const idx = await getIndex();
+  if (await idx.isIndexCreated()) {
+    await idx.deleteIndex();
+  }
+  await idx.createIndex();
 
   // Index all items
   console.log(`[Indexer] Indexing ${allItems.length} items...`);
@@ -343,6 +380,7 @@ export async function indexEntityFile(filePath: string): Promise<void> {
     const content = readFileSync(filePath, "utf-8");
     const items: MemoryItem[] = [];
     const subdir = type === "person" ? "people" : "projects";
+    const source = `${subdir}/${basename(filePath)}`;
 
     // Split by ## headers for section-level indexing
     const sections = content.split(/^## /m);
@@ -353,12 +391,13 @@ export async function indexEntityFile(filePath: string): Promise<void> {
         id: `${type}-${filename}-preamble`,
         type,
         content: sections[0].trim(),
-        source: `${subdir}/${basename(filePath)}`,
+        source,
         section: "preamble",
       });
     }
 
     // Each section
+    const titleOccurrences = new Map<string, number>();
     for (let i = 1; i < sections.length; i++) {
       const section = sections[i];
       const firstLine = section.split("\n")[0];
@@ -366,16 +405,21 @@ export async function indexEntityFile(filePath: string): Promise<void> {
       const sectionContent = section.slice(firstLine.length).trim();
 
       if (sectionContent) {
+        const normalizedTitle = sectionTitle.toLowerCase();
+        const occurrence = (titleOccurrences.get(normalizedTitle) ?? 0) + 1;
+        titleOccurrences.set(normalizedTitle, occurrence);
+
         items.push({
-          id: `${type}-${filename}-${i}`,
+          id: createStableSectionId(type, filename, sectionTitle, occurrence),
           type,
           content: `## ${sectionTitle}\n\n${sectionContent}`,
-          source: `${subdir}/${basename(filePath)}`,
+          source,
           section: sectionTitle,
         });
       }
     }
 
+    await deleteItemsBySource(source);
     await indexItems(items);
     console.log(`[Indexer] Indexed ${items.length} sections from ${basename(filePath)}`);
   } catch (err) {

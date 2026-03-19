@@ -16,6 +16,7 @@ import { homedir } from "os";
 import { embed, embedBatch } from "./embeddings.js";
 import { LocalIndex } from "vectra";
 import { getIndexDir } from "./config.js";
+import { readJsonlFile } from "./jsonl.js";
 
 // Index state tracking for incremental updates
 interface IndexState {
@@ -89,6 +90,17 @@ export interface ConversationSearchResult {
 // Cached index with path tracking
 let convIndex: LocalIndex | null = null;
 let convIndexPath: string | null = null;
+const CONVERSATION_EMBEDDING_BATCH_SIZE = 96;
+let conversationIndexQueue: Promise<void> = Promise.resolve();
+
+function queueConversationIndexOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const task = conversationIndexQueue.then(operation, operation);
+  conversationIndexQueue = task.then(
+    () => undefined,
+    () => undefined
+  );
+  return task;
+}
 
 async function getConversationIndex(): Promise<LocalIndex> {
   const currentIndexDir = getIndexDir();
@@ -241,37 +253,30 @@ function extractUserText(content: string | unknown[]): string {
 /**
  * Parse a conversation file and extract exchanges
  */
-function parseConversationFile(filePath: string, projectPath: string): ConversationExchange[] {
+async function parseConversationFile(filePath: string, projectPath: string): Promise<ConversationExchange[]> {
   const exchanges: ConversationExchange[] = [];
   const projectName = getProjectName(projectPath);
 
   try {
-    const content = readFileSync(filePath, "utf-8");
-    const lines = content.trim().split("\n").filter(Boolean);
-
     let currentUser: { msg: ConversationMessage; text: string } | null = null;
 
-    for (const line of lines) {
-      try {
-        const msg: ConversationMessage = JSON.parse(line);
-
+    const stats = await readJsonlFile<ConversationMessage>(filePath, {
+      onItem(msg) {
         if (msg.type === "user" && msg.message?.content) {
-          // Skip tool results - these aren't actual user prompts
           if (isToolResult(msg.message.content)) {
-            continue;
+            return;
           }
 
-          // Extract the actual text
           const userText = extractUserText(msg.message.content);
-
-          // Skip noise (command outputs, compacted summaries, very short messages)
           if (!userText || isNoiseContent(userText)) {
-            continue;
+            return;
           }
 
           currentUser = { msg, text: userText };
-        } else if (msg.type === "assistant" && currentUser && msg.message?.content) {
-          // Found a user-assistant pair
+          return;
+        }
+
+        if (msg.type === "assistant" && currentUser && msg.message?.content) {
           const assistantText = extractAssistantText(msg.message.content);
 
           if (currentUser.text) {
@@ -280,7 +285,7 @@ function parseConversationFile(filePath: string, projectPath: string): Conversat
               userPrompt: currentUser.text.slice(0, 1000),
               assistantSummary: assistantText,
               project: projectName,
-              projectPath: projectPath,
+              projectPath,
               branch: currentUser.msg.gitBranch,
               timestamp: currentUser.msg.timestamp || new Date().toISOString(),
               sessionId: currentUser.msg.sessionId || basename(filePath, ".jsonl"),
@@ -289,17 +294,51 @@ function parseConversationFile(filePath: string, projectPath: string): Conversat
             });
           }
 
-          currentUser = null; // Reset for next exchange
+          currentUser = null;
         }
-      } catch {
-        // Skip malformed lines
-      }
+      },
+    });
+
+    if (stats.malformedLines > 0) {
+      console.warn(`[Conversations] Skipped ${stats.malformedLines} malformed line(s) in ${filePath}`);
     }
   } catch (err) {
     console.error(`[Conversations] Failed to parse ${filePath}: ${String(err)}`);
   }
 
   return exchanges;
+}
+
+async function indexConversationExchanges(
+  idx: LocalIndex,
+  exchanges: ConversationExchange[]
+): Promise<void> {
+  for (let i = 0; i < exchanges.length; i += CONVERSATION_EMBEDDING_BATCH_SIZE) {
+    const chunk = exchanges.slice(i, i + CONVERSATION_EMBEDDING_BATCH_SIZE);
+    const texts = chunk.map((exchange) =>
+      `${exchange.project}${exchange.branch ? ` (${exchange.branch})` : ""}: ${exchange.userPrompt}`
+    );
+    const vectors = await embedBatch(texts);
+
+    for (let j = 0; j < chunk.length; j++) {
+      const exchange = chunk[j];
+      await idx.upsertItem({
+        id: exchange.id,
+        vector: vectors[j],
+        metadata: {
+          userPrompt: exchange.userPrompt,
+          assistantSummary: exchange.assistantSummary,
+          project: exchange.project,
+          projectPath: exchange.projectPath,
+          branch: exchange.branch || "",
+          timestamp: exchange.timestamp,
+          sessionId: exchange.sessionId,
+          sessionPath: exchange.sessionPath,
+          messageUuid: exchange.messageUuid,
+        },
+      });
+    }
+  }
 }
 
 /**
@@ -338,6 +377,10 @@ function* scanConversationFiles(): Generator<{ filePath: string; projectPath: st
  * Rebuild the conversation index from scratch
  */
 export async function rebuildConversationIndex(): Promise<{ exchangeCount: number }> {
+  return queueConversationIndexOperation(() => doRebuildConversationIndex());
+}
+
+async function doRebuildConversationIndex(): Promise<{ exchangeCount: number }> {
   console.log("[Conversations] Starting full index rebuild...");
   const startTime = Date.now();
 
@@ -345,7 +388,7 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
   const newState: IndexState = { files: {}, lastUpdate: new Date().toISOString() };
 
   for (const { filePath, projectPath, mtime } of scanConversationFiles()) {
-    const exchanges = parseConversationFile(filePath, projectPath);
+    const exchanges = await parseConversationFile(filePath, projectPath);
     allExchanges.push(...exchanges);
     newState.files[filePath] = {
       mtime,
@@ -360,35 +403,9 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
     return { exchangeCount: 0 };
   }
 
-  // Create embeddings for all exchanges
-  const texts = allExchanges.map(e =>
-    `${e.project}${e.branch ? ` (${e.branch})` : ""}: ${e.userPrompt}`
-  );
-
-  console.log(`[Conversations] Generating embeddings...`);
-  const vectors = await embedBatch(texts);
-
   const idx = await getConversationIndex();
-
-  // Index all exchanges
-  for (let i = 0; i < allExchanges.length; i++) {
-    const exchange = allExchanges[i];
-    await idx.upsertItem({
-      id: exchange.id,
-      vector: vectors[i],
-      metadata: {
-        userPrompt: exchange.userPrompt,
-        assistantSummary: exchange.assistantSummary,
-        project: exchange.project,
-        projectPath: exchange.projectPath,
-        branch: exchange.branch || "",
-        timestamp: exchange.timestamp,
-        sessionId: exchange.sessionId,
-        sessionPath: exchange.sessionPath,
-        messageUuid: exchange.messageUuid,
-      },
-    });
-  }
+  console.log(`[Conversations] Generating embeddings and indexing in batches...`);
+  await indexConversationExchanges(idx, allExchanges);
 
   saveIndexState(newState);
 
@@ -402,6 +419,10 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
  * Incrementally update the conversation index (only changed files)
  */
 export async function updateConversationIndex(): Promise<{ exchangeCount: number; filesUpdated: number; skipped: number }> {
+  return queueConversationIndexOperation(() => doUpdateConversationIndex());
+}
+
+async function doUpdateConversationIndex(): Promise<{ exchangeCount: number; filesUpdated: number; skipped: number }> {
   console.log("[Conversations] Starting incremental update...");
   const startTime = Date.now();
 
@@ -432,32 +453,10 @@ export async function updateConversationIndex(): Promise<{ exchangeCount: number
     }
 
     // File is new or modified - parse and index
-    const exchanges = parseConversationFile(filePath, projectPath);
+    const exchanges = await parseConversationFile(filePath, projectPath);
 
     if (exchanges.length > 0) {
-      const texts = exchanges.map(e =>
-        `${e.project}${e.branch ? ` (${e.branch})` : ""}: ${e.userPrompt}`
-      );
-      const vectors = await embedBatch(texts);
-
-      for (let i = 0; i < exchanges.length; i++) {
-        const exchange = exchanges[i];
-        await idx.upsertItem({
-          id: exchange.id,
-          vector: vectors[i],
-          metadata: {
-            userPrompt: exchange.userPrompt,
-            assistantSummary: exchange.assistantSummary,
-            project: exchange.project,
-            projectPath: exchange.projectPath,
-            branch: exchange.branch || "",
-            timestamp: exchange.timestamp,
-            sessionId: exchange.sessionId,
-            sessionPath: exchange.sessionPath,
-            messageUuid: exchange.messageUuid,
-          },
-        });
-      }
+      await indexConversationExchanges(idx, exchanges);
     }
 
     state.files[filePath] = {
@@ -588,29 +587,20 @@ export async function expandConversation(
     throw new Error(`Session file not found: ${sessionPath}`);
   }
 
-  const content = readFileSync(sessionPath, "utf-8");
-  const lines = content.trim().split("\n").filter(Boolean);
-
   const messages: Array<{ role: string; content: string; timestamp?: string; uuid?: string }> = [];
   let project = "";
   let branch: string | undefined;
 
-  // Parse all messages
-  for (const line of lines) {
-    try {
-      const msg: ConversationMessage = JSON.parse(line);
-
+  const stats = await readJsonlFile<ConversationMessage>(sessionPath, {
+    onItem(msg) {
       if (msg.type === "user" && msg.message?.content) {
-        // Skip tool results
         if (isToolResult(msg.message.content)) {
-          continue;
+          return;
         }
 
         const text = extractUserText(msg.message.content);
-
-        // Skip empty or noise content
         if (!text || isNoiseContent(text)) {
-          continue;
+          return;
         }
 
         messages.push({
@@ -626,7 +616,10 @@ export async function expandConversation(
         if (!branch && msg.gitBranch) {
           branch = msg.gitBranch;
         }
-      } else if (msg.type === "assistant" && msg.message?.content) {
+        return;
+      }
+
+      if (msg.type === "assistant" && msg.message?.content) {
         const text = extractAssistantText(msg.message.content);
         if (text) {
           messages.push({
@@ -637,9 +630,11 @@ export async function expandConversation(
           });
         }
       }
-    } catch {
-      // Skip malformed lines
-    }
+    },
+  });
+
+  if (stats.malformedLines > 0) {
+    console.warn(`[Conversations] Skipped ${stats.malformedLines} malformed line(s) in ${sessionPath}`);
   }
 
   // Find the target message index

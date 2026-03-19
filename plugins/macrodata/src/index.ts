@@ -18,8 +18,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, realpathSync } from "fs";
+import { join, resolve, sep } from "path";
+import { homedir } from "os";
 import {
   searchMemory as doSearchMemory,
   indexJournalEntry,
@@ -42,6 +43,7 @@ import {
   getIndexDir,
   getRemindersDir,
 } from "./config.js";
+import { listJsonlFiles, readJsonlFile, resolveJsonlPath } from "./jsonl.js";
 import { unlinkSync } from "fs";
 
 // Types
@@ -139,35 +141,78 @@ function getTodayJournalPath(): string {
   return join(getJournalDir(), `${today}.jsonl`);
 }
 
-function getRecentJournalEntries(count: number): JournalEntry[] {
+async function getRecentJournalEntries(count: number, topic?: string): Promise<JournalEntry[]> {
   const entries: JournalEntry[] = [];
   const journalDir = getJournalDir();
 
-  // Get all journal files, sorted by name (date) descending
-  if (!existsSync(journalDir)) return entries;
-
-  const files = readdirSync(journalDir)
-    .filter((f: string) => f.endsWith(".jsonl"))
-    .sort()
-    .reverse();
+  const files = listJsonlFiles(journalDir, { descending: true });
 
   for (const file of files) {
     if (entries.length >= count) break;
 
-    const content = readFileSync(join(journalDir, file), "utf-8");
-    const lines = content.trim().split("\n").filter(Boolean);
+    const fileEntries: JournalEntry[] = [];
+    const filePath = resolveJsonlPath(journalDir, file);
 
-    for (const line of lines.reverse()) {
+    const stats = await readJsonlFile<JournalEntry>(filePath, {
+      onItem(entry) {
+        if (topic && entry.topic !== topic) {
+          return;
+        }
+        fileEntries.push(entry);
+      },
+    });
+
+    if (stats.malformedLines > 0) {
+      console.warn(`[get_recent_journal] Skipped ${stats.malformedLines} malformed line(s) in ${file}`);
+    }
+
+    for (let i = fileEntries.length - 1; i >= 0; i--) {
       if (entries.length >= count) break;
-      try {
-        entries.push(JSON.parse(line));
-      } catch {
-        // Skip malformed lines
-      }
+      entries.push(fileEntries[i]);
     }
   }
 
   return entries;
+}
+
+let conversationIndexJob: Promise<void> | null = null;
+let conversationIndexJobType: "rebuild" | "update" | null = null;
+
+function startConversationIndexJob(action: "rebuild" | "update"): string {
+  if (conversationIndexJob) {
+    return `Conversation index ${conversationIndexJobType} already running in background.`;
+  }
+
+  conversationIndexJobType = action;
+  if (action === "rebuild") {
+    conversationIndexJob = rebuildConversationIndex()
+      .then((result) => {
+        console.log(`[Macrodata] Conversation index rebuilt: ${result.exchangeCount} exchanges`);
+      })
+      .catch((err) => {
+        console.error(`[Macrodata] Conversation index rebuild failed: ${err}`);
+      })
+      .finally(() => {
+        conversationIndexJob = null;
+        conversationIndexJobType = null;
+      });
+  } else {
+    conversationIndexJob = updateConversationIndex()
+      .then((result) => {
+        console.log(
+          `[Macrodata] Conversation index updated: ${result.filesUpdated} files (${result.skipped} skipped, total: ${result.exchangeCount})`
+        );
+      })
+      .catch((err) => {
+        console.error(`[Macrodata] Conversation index update failed: ${err}`);
+      })
+      .finally(() => {
+        conversationIndexJob = null;
+        conversationIndexJobType = null;
+      });
+  }
+
+  return `Conversation index ${action} started in background.`;
 }
 
 // Create MCP server
@@ -229,13 +274,7 @@ server.tool(
     topic: z.string().optional().describe("Filter by specific topic"),
   },
   async ({ count, topic }) => {
-    let entries = getRecentJournalEntries(Math.min(count * 2, 100)); // Get more to filter
-    
-    if (topic) {
-      entries = entries.filter(e => e.topic === topic);
-    }
-    
-    entries = entries.slice(0, count);
+    const entries = await getRecentJournalEntries(count, topic);
 
     return {
       content: [
@@ -332,20 +371,12 @@ server.tool(
         }
       } else {
         if (action === "rebuild") {
-          // Run in background - don't wait
-          rebuildConversationIndex()
-            .then((result) => console.log(`[Macrodata] Conversation index rebuilt: ${result.exchangeCount} exchanges`))
-            .catch((err) => console.error(`[Macrodata] Conversation index rebuild failed: ${err}`));
           return {
-            content: [{ type: "text" as const, text: `Conversation index rebuild started in background.` }],
+            content: [{ type: "text" as const, text: startConversationIndexJob("rebuild") }],
           };
         } else if (action === "update") {
-          // Incremental update - also background
-          updateConversationIndex()
-            .then((result) => console.log(`[Macrodata] Conversation index updated: ${result.filesUpdated} files (${result.skipped} skipped, total: ${result.exchangeCount})`))
-            .catch((err) => console.error(`[Macrodata] Conversation index update failed: ${err}`));
           return {
-            content: [{ type: "text" as const, text: `Conversation index update started in background.` }],
+            content: [{ type: "text" as const, text: startConversationIndexJob("update") }],
           };
         } else {
           const stats = await getConversationIndexStats();
@@ -493,8 +524,7 @@ server.tool(
   },
   async ({ count }) => {
     // Get recent journal entries filtered by topic
-    let entries = getRecentJournalEntries(count * 3);
-    entries = entries.filter(e => e.topic === "conversation-summary").slice(0, count);
+    const entries = await getRecentJournalEntries(count, "conversation-summary");
 
     if (entries.length === 0) {
       return {
@@ -591,7 +621,6 @@ server.tool(
   async ({ sessionPath, messageUuid, contextMessages }) => {
     try {
       // Resolve session path if only ID given
-      let fullPath = sessionPath;
       if (!sessionPath.startsWith("/")) {
         // Assume it's a session ID, need to find the file
         // For now, require full path
@@ -605,7 +634,24 @@ server.tool(
         };
       }
 
-      const result = await expandConversation(fullPath, messageUuid || "", contextMessages);
+      const allowedSessionsRoot = resolve(join(homedir(), ".claude", "projects"));
+      const resolvedPath = resolve(sessionPath);
+      const realAllowedRoot = realpathSync(allowedSessionsRoot);
+      const realSessionPath = realpathSync(resolvedPath);
+      const allowedPrefix = `${realAllowedRoot}${sep}`;
+
+      if (!realSessionPath.startsWith(allowedPrefix) || !realSessionPath.endsWith(".jsonl")) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Session path must point to a .jsonl file under ~/.claude/projects.",
+            },
+          ],
+        };
+      }
+
+      const result = await expandConversation(realSessionPath, messageUuid || "", contextMessages);
 
       const formatted = result.messages.map(m => {
         const prefix = m.role === "user" ? "User" : "Assistant";

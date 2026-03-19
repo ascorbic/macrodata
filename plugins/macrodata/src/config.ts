@@ -10,6 +10,30 @@ import { homedir } from "os";
 import { join } from "path";
 
 const DEFAULT_ROOT = join(homedir(), ".config", "macrodata");
+const DEFAULT_ENABLED_AGENTS = ["default", "build", "plan"] as const;
+
+interface MacrodataConfig {
+  root?: unknown;
+  enabled_agents?: unknown;
+}
+
+function readConfig(): MacrodataConfig | null {
+  const configPath = join(DEFAULT_ROOT, "config.json");
+  if (!existsSync(configPath)) {
+    return null;
+  }
+
+  try {
+    const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+    if (raw && typeof raw === "object") {
+      return raw as MacrodataConfig;
+    }
+  } catch {
+    // Ignore parse errors
+  }
+
+  return null;
+}
 
 /**
  * Get the macrodata state root directory.
@@ -23,18 +47,33 @@ export function getStateRoot(): string {
     return process.env.MACRODATA_ROOT;
   }
 
-  // Check config file in default location
-  const configPath = join(DEFAULT_ROOT, "config.json");
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, "utf-8"));
-      if (config.root) return config.root;
-    } catch {
-      // Ignore parse errors
-    }
+  const config = readConfig();
+  if (config && typeof config.root === "string" && config.root.trim().length > 0) {
+    return config.root;
   }
 
   return DEFAULT_ROOT;
+}
+
+/**
+ * Get the list of agent names that should receive macrodata context.
+ *
+ * Special values:
+ * - "default": primary sessions (no explicit agent name)
+ * - "*": all agents
+ */
+export function getEnabledAgents(): string[] {
+  const config = readConfig();
+  if (!config || !Array.isArray(config.enabled_agents)) {
+    return [...DEFAULT_ENABLED_AGENTS];
+  }
+
+  const enabledAgents = config.enabled_agents
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  return enabledAgents;
 }
 
 export function getStateDir(): string {

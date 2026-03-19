@@ -16,7 +16,7 @@ import { memoryTools } from "./tools.js";
 import { formatContextForPrompt, formatContextBlocksForPrompt, consumePendingContext, initializeStateRoot, getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
 import { getEnabledAgents } from "../src/config.js";
-import { setSessionAgent, hasSessionAgent, getSessionAgent, clearSession, isAgentEnabled } from "./session.js";
+import { setSessionAgent, clearSession, isAgentEnabled, resolveSessionAgent } from "./session.js";
 
 
 /**
@@ -128,23 +128,6 @@ function installSkills(): void {
 export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
   const enabledAgents = getEnabledAgents();
 
-  const resolveSessionAgent = (input: unknown): string | undefined => {
-    const payload = input as { sessionID?: string; agent?: unknown };
-    if (!payload.sessionID) {
-      return undefined;
-    }
-
-    if (hasSessionAgent(payload.sessionID)) {
-      return getSessionAgent(payload.sessionID);
-    }
-
-    if ("agent" in payload) {
-      return typeof payload.agent === "string" ? payload.agent : "default";
-    }
-
-    return undefined;
-  };
-
   // Initialize state directories
   initializeStateRoot();
 
@@ -179,7 +162,10 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
     "experimental.chat.system.transform": async (input, output) => {
       try {
         const pendingContext = consumePendingContext();
-        const sessionAgent = resolveSessionAgent(input);
+        const sessionAgent = resolveSessionAgent(
+          input as { sessionID?: string; agent?: unknown },
+          enabledAgents,
+        );
         if (!isAgentEnabled(sessionAgent, enabledAgents)) {
           return;
         }
@@ -203,7 +189,10 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
     // Inject memory context before compaction
     "experimental.session.compacting": async (input, output) => {
       try {
-        const sessionAgent = resolveSessionAgent(input);
+        const sessionAgent = resolveSessionAgent(
+          input as { sessionID?: string; agent?: unknown },
+          enabledAgents,
+        );
         if (!isAgentEnabled(sessionAgent, enabledAgents)) {
           return;
         }

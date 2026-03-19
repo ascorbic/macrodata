@@ -81,29 +81,14 @@ Filter to actual conversation content:
 - Include: user messages, assistant text responses
 - Exclude: tool calls, tool results, system content, compaction summaries
 
-Extract and return as JSON:
-{
-  "distilled_actions": [
-    {
-      "summary": "Fixed auth bug in src/auth.ts where token refresh was racing",
-      "files": ["src/auth.ts"],
-      "outcome": "Added mutex lock around refresh"
-    }
-  ],
-  "facts": [
-    {
-      "topic": "project-name",
-      "content": "Uses JWT tokens with 15min expiry"
-    },
-    {
-      "topic": "person-name",
-      "content": "Prefers explicit error handling over try/catch"
-    }
-  ],
-  "decisions": [
-    "Chose Redis over in-memory cache for session storage because of multi-instance deployment"
-  ]
-}
+Extract key items, then write them directly to journal using tool calls:
+
+- For each accomplishment/action:
+  `macrodata_log_journal(topic="distilled", content="<action summary> Files: <comma-separated files>. Outcome: <outcome>")`
+- For each durable fact:
+  `macrodata_log_journal(topic="distilled-fact", content="[<topic>] <fact content>")`
+- For each decision and rationale:
+  `macrodata_log_journal(topic="distilled-decision", content="<decision text>")`
 
 Focus on:
 - What was accomplished (not just discussed)
@@ -111,7 +96,8 @@ Focus on:
 - New information about projects, people, or preferences
 - File paths and specific technical details that should survive compression
 
-Return ONLY the JSON, no explanation.
+Return ONLY a short one-line summary, for example:
+"Wrote 3 actions, 2 facts, 1 decision to journal."
 `)
 ```
 
@@ -119,48 +105,27 @@ Return ONLY the JSON, no explanation.
 
 After all sub-agents complete:
 
-**Write distilled actions to journal:**
-```
-For each action in all results:
-  macrodata_log_journal(topic="distilled", content=action.summary + " Files: " + action.files.join(", "))
-```
-
 **Write overall summary to journal:**
 ```
-macrodata_log_journal(topic="distill-summary", content="Processed N sessions. Extracted X actions, Y facts.")
+macrodata_log_journal(topic="distill-summary", content="Processed N sessions. Sub-agents wrote distilled entries directly to journal.")
 ```
 
-**Update entity files with facts:**
-- Group facts by topic
-- For each topic, read existing entity file (if any)
-- Integrate new facts, removing duplicates
-- Write updated file
+**Read distilled data from journal (instead of parsing large sub-agent payloads):**
+- Use `macrodata_get_recent_journal` to fetch recent entries
+- Filter/group by topics: `distilled`, `distilled-fact`, `distilled-decision`
+- Update entity/state files from those journal entries
+
+Do not aggregate extracted raw data in coordinator context.
 
 ### 4. Example Sub-Agent Output
 
-```json
-{
-  "distilled_actions": [
-    {
-      "summary": "Added /distill skill to macrodata plugin",
-      "files": ["plugins/macrodata/skills/distill/SKILL.md"],
-      "outcome": "Skill extracts facts from conversations via sub-agents"
-    }
-  ],
-  "facts": [
-    {
-      "topic": "macrodata",
-      "content": "Distillation separates narrative context from retained facts for better compression"
-    }
-  ],
-  "decisions": [
-    "Coordinator updates state directly to prevent race conditions from parallel sub-agents"
-  ]
-}
+```text
+Wrote 2 actions, 4 facts, 1 decision to journal.
 ```
 
 ## Notes
 
 - Sub-agents should be spawned in parallel for efficiency
+- Sub-agents MUST write to journal themselves and return only a short summary line
 - Empty results are fine - not every conversation has extractable knowledge
 - Facts should be concise and specific, not narrative summaries

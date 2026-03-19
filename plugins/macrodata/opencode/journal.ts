@@ -4,7 +4,7 @@
  * Write journal entries and search memory
  */
 
-import { existsSync, appendFileSync, mkdirSync, readFileSync, readdirSync } from "fs";
+import { existsSync, appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { getStateRoot } from "./context.js";
 import { indexJournalEntry } from "./search.js";
@@ -75,7 +75,13 @@ export async function logJournal(
 /**
  * Get recent journal entries
  */
-export function getRecentJournal(count: number, topic?: string): JournalEntry[] {
+export function getRecentJournal(
+  count: number,
+  topic?: string,
+  options: { mode?: "summary" | "full"; maxChars?: number } = {}
+): JournalEntry[] {
+  const mode = options.mode || "full";
+  const maxChars = options.maxChars ?? 200;
   const stateRoot = getStateRoot();
   const journalDir = join(stateRoot, "journal");
   let entries: JournalEntry[] = [];
@@ -112,14 +118,73 @@ export function getRecentJournal(count: number, topic?: string): JournalEntry[] 
     entries = entries.filter((e) => e.topic === topic);
   }
 
+  if (mode === "summary") {
+    entries = entries.map((entry) => {
+      const compact = entry.content.replace(/\s+/g, " ").trim();
+      const summary = compact.length <= maxChars ? compact : `${compact.slice(0, Math.max(0, maxChars - 3))}...`;
+      return {
+        ...entry,
+        content: summary,
+      };
+    });
+  }
+
   return entries.slice(0, count);
+}
+
+function upsertSection(markdown: string, heading: string, bodyLines: string[]): string {
+  const sectionHeader = `## ${heading}`;
+  const newBody = bodyLines.join("\n").trim();
+  const replacement = `${sectionHeader}\n${newBody}`;
+  const escapedHeader = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sectionRegex = new RegExp(`(^## ${escapedHeader}\\n[\\s\\S]*?)(?=\\n## |$)`, "m");
+
+  if (sectionRegex.test(markdown)) {
+    return markdown.replace(sectionRegex, replacement);
+  }
+
+  const trimmed = markdown.trim();
+  if (!trimmed) return replacement;
+  return `${trimmed}\n\n${replacement}`;
+}
+
+function updateAnchoredState(options: {
+  summary: string;
+  keyDecisions?: string[];
+  openThreads?: string[];
+}): void {
+  const stateRoot = getStateRoot();
+  const statePath = join(stateRoot, "state", "state.md");
+  const existing = existsSync(statePath) ? readFileSync(statePath, "utf-8") : "";
+
+  let next = upsertSection(existing, "Current Focus", [
+    `- ${options.summary.replace(/\s+/g, " ").trim().slice(0, 180) || "_Not set_"}`,
+  ]);
+
+  if (options.openThreads?.length) {
+    next = upsertSection(
+      next,
+      "Open Threads",
+      options.openThreads.map((thread) => `- ${thread}`),
+    );
+  }
+
+  if (options.keyDecisions?.length) {
+    next = upsertSection(
+      next,
+      "Key Decisions",
+      options.keyDecisions.map((decision) => `- ${decision}`),
+    );
+  }
+
+  writeFileSync(statePath, `${next.trim()}\n`);
 }
 
 /**
  * Get recent conversation summaries
  */
 export function getRecentSummaries(count: number): JournalEntry[] {
-  return getRecentJournal(count, "conversation-summary");
+  return getRecentJournal(count, "conversation-summary", { mode: "summary" });
 }
 
 /**
@@ -150,4 +215,10 @@ export async function saveConversationSummary(options: {
   await logJournal("conversation-summary", parts.join("\n"), {
     source: "opencode-plugin",
   });
+
+  try {
+    updateAnchoredState(options);
+  } catch (err) {
+    logger.error(`Failed to update anchored state: ${String(err)}`);
+  }
 }

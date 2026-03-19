@@ -110,10 +110,15 @@ export const logJournalTool = tool({
 export const getRecentJournalTool = tool({
   description: "Retrieve recent journal entries for context",
   args: {
-    count: tool.schema.number().optional().describe("Number of entries to retrieve (default: 40)"),
+    count: tool.schema.number().optional().describe("Number of entries to retrieve (default: 10)"),
+    mode: tool.schema.enum(["summary", "full"]).optional().describe("Return compact summaries (default) or full entries"),
+    maxChars: tool.schema.number().optional().describe("Maximum characters per entry in summary mode (default: 200)"),
   },
   async execute(args) {
-    const entries = getRecentJournal(args.count || 40);
+    const entries = getRecentJournal(args.count || 10, undefined, {
+      mode: (args.mode as "summary" | "full" | undefined) || "summary",
+      maxChars: args.maxChars || 200,
+    });
     return JSON.stringify({ success: true, entries });
   },
 });

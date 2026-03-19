@@ -13,8 +13,10 @@ import { join } from "path";
 import { homedir } from "os";
 import { spawn } from "child_process";
 import { memoryTools } from "./tools.js";
-import { formatContextForPrompt, consumePendingContext, initializeStateRoot, getStateRoot } from "./context.js";
+import { formatContextForPrompt, formatContextBlocksForPrompt, consumePendingContext, initializeStateRoot, getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
+import { getEnabledAgents } from "../src/config.js";
+import { setSessionAgent, hasSessionAgent, getSessionAgent, clearSession, isAgentEnabled } from "./session.js";
 
 
 /**
@@ -124,6 +126,25 @@ function installSkills(): void {
 }
 
 export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
+  const enabledAgents = getEnabledAgents();
+
+  const resolveSessionAgent = (input: unknown): string | undefined => {
+    const payload = input as { sessionID?: string; agent?: unknown };
+    if (!payload.sessionID) {
+      return undefined;
+    }
+
+    if (hasSessionAgent(payload.sessionID)) {
+      return getSessionAgent(payload.sessionID);
+    }
+
+    if ("agent" in payload) {
+      return typeof payload.agent === "string" ? payload.agent : "default";
+    }
+
+    return undefined;
+  };
+
   // Initialize state directories
   initializeStateRoot();
 
@@ -134,20 +155,45 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
   signalDaemonReload();
 
   // Install skills to global config on plugin load
-  installSkills();
+
+  // I don't want this
+  //installSkills();
 
   return {
+    "chat.message": async (input) => {
+      const payload = input as { sessionID?: string; agent?: string };
+      if (!payload.sessionID) return;
+      setSessionAgent(payload.sessionID, payload.agent);
+    },
+
+    event: async (input) => {
+      const payload = input as { event?: { type?: string; properties?: unknown } };
+      if (payload.event?.type !== "session.deleted") return;
+      const properties = payload.event.properties as { info?: { id?: string } };
+      const sessionID = properties?.info?.id;
+      if (!sessionID) return;
+      clearSession(sessionID);
+    },
+
     // Inject memory context into system prompt
-    "experimental.chat.system.transform": async (_input, output) => {
+    "experimental.chat.system.transform": async (input, output) => {
       try {
         const pendingContext = consumePendingContext();
+        const sessionAgent = resolveSessionAgent(input);
+        if (!isAgentEnabled(sessionAgent, enabledAgents)) {
+          return;
+        }
+
         if (pendingContext) {
           output.system.push(pendingContext);
         }
 
-        const memoryContext = await formatContextForPrompt({ client: ctx.client });
-        if (memoryContext) {
-          output.system.push(memoryContext);
+        const memoryBlocks = await formatContextBlocksForPrompt({ client: ctx.client });
+        if (memoryBlocks.staticContext) {
+          output.system.push(memoryBlocks.staticContext);
+        }
+        if (memoryBlocks.dynamicContext) {
+          output.system.push(memoryBlocks.dynamicContext);
         }
       } catch (err) {
         logger.error(`System context injection error: ${String(err)}`);
@@ -155,8 +201,13 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
     },
 
     // Inject memory context before compaction
-    "experimental.session.compacting": async (_input, output) => {
+    "experimental.session.compacting": async (input, output) => {
       try {
+        const sessionAgent = resolveSessionAgent(input);
+        if (!isAgentEnabled(sessionAgent, enabledAgents)) {
+          return;
+        }
+
         const memoryContext = await formatContextForPrompt({ forCompaction: true });
 
         if (memoryContext) {

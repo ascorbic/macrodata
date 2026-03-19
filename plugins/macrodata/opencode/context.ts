@@ -4,7 +4,8 @@
  * Reads state files and formats them for injection into conversations
  */
 
-import { existsSync, readFileSync, readdirSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
 
 import { join } from "path";
 import { getStateRoot, getJournalDir, getRemindersDir } from "../src/config.js";
@@ -72,7 +73,13 @@ interface JournalEntry {
   metadata?: Record<string, unknown>;
 }
 
-function getRecentJournal(count: number): JournalEntry[] {
+function getRecentJournal(
+  count: number,
+  _topic?: string,
+  options: { mode?: "summary" | "full"; maxChars?: number } = {}
+): JournalEntry[] {
+  const mode = options.mode || "summary";
+  const maxChars = options.maxChars ?? 200;
   const entries: JournalEntry[] = [];
   const journalDir = getJournalDir();
 
@@ -103,6 +110,17 @@ function getRecentJournal(count: number): JournalEntry[] {
     // Ignore errors
   }
 
+  if (mode === "summary") {
+    return entries.map((entry) => {
+      const compact = entry.content.replace(/\s+/g, " ").trim();
+      const summary = compact.length <= maxChars ? compact : `${compact.slice(0, Math.max(0, maxChars - 3))}...`;
+      return {
+        ...entry,
+        content: summary,
+      };
+    });
+  }
+
   return entries;
 }
 
@@ -121,7 +139,9 @@ function getSchedules(): Schedule[] {
 
   const schedules: Schedule[] = [];
   try {
-    const files = readdirSync(remindersDir).filter(f => f.endsWith('.json'));
+    const files = readdirSync(remindersDir)
+      .filter((f) => f.endsWith(".json"))
+      .sort();
     for (const file of files) {
       try {
         const content = readFileSync(join(remindersDir, file), "utf-8");
@@ -141,12 +161,239 @@ interface FormatOptions {
   client?: { config: { providers: () => Promise<{ data?: { providers?: Array<{ id: string; models?: Record<string, unknown> }> } }> } };
 }
 
+interface SectionCache {
+  content: string;
+  hash: string;
+}
+
+interface ModelsCache {
+  content: string;
+  fetchedAt: number;
+}
+
+interface ContextCache {
+  identity: SectionCache | null;
+  today: SectionCache | null;
+  state: SectionCache | null;
+  workspace: SectionCache | null;
+  schedules: SectionCache | null;
+  journal: SectionCache | null;
+  human: string | null;
+  usage: string | null;
+  files: string | null;
+  models: ModelsCache | null;
+  turnCount: number;
+  lastCompactionAt: number;
+}
+
+const MODELS_TTL_MS = 30 * 60 * 1000;
+const LIVE_TOKEN_BUDGET = 1000;
+const COMPACTION_TOKEN_BUDGET = 1500;
+
+// KNOWN: module-level cache persists across sessions in the same process.
+const cache: ContextCache = {
+  identity: null,
+  today: null,
+  state: null,
+  workspace: null,
+  schedules: null,
+  journal: null,
+  human: null,
+  usage: null,
+  files: null,
+  models: null,
+  turnCount: 0,
+  lastCompactionAt: -1,
+};
+
+function hashContent(content: string): string {
+  return createHash("sha1").update(content).digest("hex").slice(0, 16);
+}
+
+function diffSection(
+  key: "identity" | "today" | "state" | "workspace" | "schedules" | "journal",
+  rawContent: string,
+  render: () => string,
+): string | null {
+  const hash = hashContent(rawContent);
+  if (cache[key]?.hash === hash) return null;
+  const content = render();
+  cache[key] = { content, hash };
+  return content;
+}
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+function extractStub(content: string, fallback: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) return fallback;
+
+  const paragraphs = trimmed
+    .split("\n\n")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !/^#{1,6}\s+/.test(part));
+
+  const candidate = paragraphs[0] || trimmed;
+  const compact = candidate
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => !/^#{1,6}\s+/.test(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!compact) return fallback;
+  if (compact.length <= 220) return compact;
+  return `${compact.slice(0, 217)}...`;
+}
+
+function ensureAnchoredStateFile(stateRoot: string): void {
+  const anchoredStatePath = join(stateRoot, "state", "state.md");
+  if (existsSync(anchoredStatePath)) return;
+
+  const template = [
+    "## Current Focus",
+    "- _Not set_",
+    "",
+    "## Active Investigations",
+    "- _None_",
+    "",
+    "## Open Threads",
+    "- _None_",
+    "",
+    "## Key Decisions",
+    "- _None_",
+    "",
+  ].join("\n");
+
+  try {
+    writeFileSync(anchoredStatePath, template);
+  } catch {
+    // Ignore write failures.
+  }
+}
+
+function renderJournal(entries: JournalEntry[]): string {
+  return entries
+    .map((entry) => {
+      const ts = new Date(entry.timestamp);
+      const date = isNaN(ts.getTime()) ? "unknown" : ts.toLocaleDateString();
+      return `- [${entry.topic}] ${entry.content.split("\n")[0]} (${date})`;
+    })
+    .join("\n");
+}
+
+function renderSchedules(schedules: Schedule[]): string {
+  if (schedules.length === 0) return "_No active schedules_";
+  return schedules
+    .map((schedule) => `- ${schedule.description} (${schedule.type}: ${schedule.expression})`)
+    .join("\n");
+}
+
+function buildFilesSection(stateRoot: string): string {
+  const stateDir = join(stateRoot, "state");
+  const stateFiles = existsSync(stateDir)
+    ? readdirSync(stateDir)
+        .filter((f) => f.endsWith(".md"))
+        .sort()
+        .map((f) => `state/${f}`)
+    : [];
+
+  const entitiesDir = join(stateRoot, "entities");
+  const entityFiles: string[] = [];
+  if (existsSync(entitiesDir)) {
+    const subdirs = readdirSync(entitiesDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+
+    for (const subdir of subdirs) {
+      const dir = join(entitiesDir, subdir);
+      try {
+        const files = readdirSync(dir)
+          .filter((f) => f.endsWith(".md"))
+          .sort();
+        for (const file of files) {
+          entityFiles.push(`entities/${subdir}/${file}`);
+        }
+      } catch {
+        // Ignore unreadable subdirectories.
+      }
+    }
+  }
+
+  const allFiles = [...stateFiles, ...entityFiles];
+  if (allFiles.length === 0) return "_No files yet_";
+  return allFiles.map((file) => `- ${file}`).join("\n");
+}
+
+async function getModelsSectionSafe(
+  client?: FormatOptions["client"],
+): Promise<string> {
+  const now = Date.now();
+  if (cache.models && now - cache.models.fetchedAt < MODELS_TTL_MS) {
+    return cache.models.content;
+  }
+  if (!client) return cache.models?.content ?? "";
+
+  try {
+    const { data } = await client.config.providers();
+    if (!data?.providers) {
+      cache.models = { content: "", fetchedAt: now };
+      return "";
+    }
+
+    type ModelInfo = {
+      family?: string;
+      release_date?: string;
+      capabilities?: { toolcall?: boolean };
+    };
+
+    const allModels: { fullId: string; family: string; releaseDate: string }[] = [];
+    for (const provider of data.providers) {
+      if (!provider.models) continue;
+      for (const [modelId, model] of Object.entries(provider.models)) {
+        const current = model as ModelInfo;
+        if (/-\d{8}$/.test(modelId) || !current.capabilities?.toolcall) continue;
+        allModels.push({
+          fullId: `${provider.id}/${modelId}`,
+          family: current.family || `${provider.id}/${modelId}`,
+          releaseDate: current.release_date || "1970-01-01",
+        });
+      }
+    }
+
+    const byFamily = new Map<string, (typeof allModels)[0]>();
+    for (const model of allModels) {
+      const existing = byFamily.get(model.family);
+      if (!existing || model.releaseDate > existing.releaseDate) {
+        byFamily.set(model.family, model);
+      }
+    }
+
+    const models = Array.from(byFamily.values())
+      .map((model) => model.fullId)
+      .sort();
+
+    const content =
+      models.length > 0
+        ? `<macrodata-models>\nAvailable models for scheduling: ${models.join(", ")}\n</macrodata-models>`
+        : "";
+    cache.models = { content, fetchedAt: now };
+    return content;
+  } catch {
+    return cache.models?.content ?? "";
+  }
+}
+
 /**
  * Format memory context for injection into conversation
  */
-export async function formatContextForPrompt(
+export async function formatContextBlocksForPrompt(
   options: FormatOptions = {}
-): Promise<string | null> {
+): Promise<{ staticContext: string | null; dynamicContext: string | null }> {
   const { forCompaction = false, client } = options;
   const stateRoot = getStateRoot();
   const identityPath = join(stateRoot, "state", "identity.md");
@@ -154,12 +401,15 @@ export async function formatContextForPrompt(
 
   // First run - return minimal context with onboarding pointer and detected user info
   if (isFirstRun) {
-    if (forCompaction) return null;
+    if (forCompaction) {
+      return { staticContext: null, dynamicContext: null };
+    }
     
     // Detect user info to avoid multiple permission prompts during onboarding
     const userInfo = detectUser();
     
-    return `[MACRODATA]
+    return {
+      staticContext: `[MACRODATA]
 
 ## Status: First Run
 
@@ -171,137 +421,177 @@ Memory is not yet configured. Load the \`macrodata-onboarding\` skill to set up.
 ${JSON.stringify(userInfo, null, 2)}
 \`\`\`
 
-Use this pre-detected info during onboarding instead of running detection scripts.`;
+Use this pre-detected info during onboarding instead of running detection scripts.`,
+      dynamicContext: null,
+    };
   }
+
+  ensureAnchoredStateFile(stateRoot);
+
+  if (forCompaction) {
+    cache.human = null;
+    cache.usage = null;
+    cache.files = null;
+    cache.lastCompactionAt = cache.turnCount;
+  }
+
+  cache.turnCount += 1;
+  const isFirstTurn = cache.turnCount === 1;
+  const isPostCompaction = cache.lastCompactionAt === cache.turnCount - 1;
+  const injectStatics = forCompaction || isFirstTurn || isPostCompaction;
+  const tokenBudget = forCompaction ? COMPACTION_TOKEN_BUDGET : LIVE_TOKEN_BUDGET;
+  let tokenCount = 0;
+
+  const staticSections: string[] = [];
+  const dynamicSections: string[] = [];
+  const appendSection = (
+    destination: "static" | "dynamic",
+    content: string,
+    mandatory = false,
+  ): void => {
+    const sectionTokens = estimateTokens(content);
+    if (!mandatory && tokenCount + sectionTokens > tokenBudget) {
+      return;
+    }
+    if (destination === "static") {
+      staticSections.push(content);
+    } else {
+      dynamicSections.push(content);
+    }
+    tokenCount += sectionTokens;
+  };
 
   const identity = readFileOrEmpty(identityPath);
   const today = readFileOrEmpty(join(stateRoot, "state", "today.md"));
-  const human = readFileOrEmpty(join(stateRoot, "state", "human.md"));
-  const workspace = readFileOrEmpty(join(stateRoot, "state", "workspace.md"));
+  const anchoredState = readFileOrEmpty(join(stateRoot, "state", "state.md"));
 
-  // Get recent journal
-  const journalEntries = getRecentJournal(forCompaction ? 10 : 5);
-  const journalFormatted = journalEntries
-    .map((e) => {
-      const ts = new Date(e.timestamp);
-      const date = isNaN(ts.getTime()) ? "unknown" : ts.toLocaleDateString();
-      return `- [${e.topic}] ${e.content.split("\n")[0]} (${date})`;
-    })
-    .join("\n");
+  appendSection(
+    "static",
+    `<macrodata-identity-stub>\n${extractStub(identity, "_Not configured_")}\n</macrodata-identity-stub>`,
+    true,
+  );
+  appendSection(
+    "static",
+    `<macrodata-today-stub>\n${extractStub(today, "_Empty_")}\n</macrodata-today-stub>`,
+    true,
+  );
 
-  // Get schedules
-  const schedules = getSchedules();
-  const schedulesFormatted =
-    schedules.length > 0
-      ? schedules
-          .map((s) => `- ${s.description} (${s.type}: ${s.expression})`)
-          .join("\n")
-      : "_No active schedules_";
-
-  const sections = [
-    `<macrodata-identity>\n${identity || "_Not configured_"}\n</macrodata-identity>`,
-    `<macrodata-today>\n${today || "_Empty_"}\n</macrodata-today>`,
-    `<macrodata-human>\n${human || "_Empty_"}\n</macrodata-human>`,
-  ];
-
-  if (workspace) {
-    sections.push(`<macrodata-workspace>\n${workspace}\n</macrodata-workspace>`);
+  const identitySection = diffSection("identity", identity, () => {
+    return `<macrodata-identity>\n${identity || "_Not configured_"}\n</macrodata-identity>`;
+  });
+  if (injectStatics && cache.identity?.content) {
+    appendSection("static", cache.identity.content);
+  } else if (identitySection) {
+    appendSection("dynamic", identitySection);
   }
 
-  sections.push(`<macrodata-journal>\n${journalFormatted || "_No entries_"}\n</macrodata-journal>`);
+  const todaySection = diffSection("today", today, () => {
+    return `<macrodata-today>\n${today || "_Empty_"}\n</macrodata-today>`;
+  });
+  if (injectStatics && cache.today?.content) {
+    appendSection("static", cache.today.content);
+  } else if (todaySection) {
+    appendSection("dynamic", todaySection);
+  }
+
+  const stateSection = diffSection("state", anchoredState, () => {
+    return `<macrodata-state>\n${anchoredState || "_Empty_"}\n</macrodata-state>`;
+  });
+  if (injectStatics && cache.state?.content) {
+    appendSection("static", cache.state.content);
+  } else if (stateSection) {
+    appendSection("dynamic", stateSection);
+  }
+
+  if (injectStatics) {
+    if (cache.human === null) {
+      cache.human = readFileOrEmpty(join(stateRoot, "state", "human.md"));
+    }
+    appendSection("static", `<macrodata-human>\n${cache.human || "_Empty_"}\n</macrodata-human>`);
+
+    if (!forCompaction) {
+      if (cache.usage === null) {
+        const usagePath = new URL("../USAGE.md", import.meta.url).pathname;
+        cache.usage = existsSync(usagePath) ? readFileSync(usagePath, "utf-8").trim() : "";
+      }
+      if (cache.usage) {
+        appendSection("static", `<macrodata-usage>\n${cache.usage}\n</macrodata-usage>`);
+      }
+
+      if (cache.files === null) {
+        cache.files = buildFilesSection(stateRoot);
+      }
+      appendSection("static", `<macrodata-files root="${stateRoot}">\n${cache.files}\n</macrodata-files>`);
+
+      const modelsSection = await getModelsSectionSafe(client);
+      if (modelsSection) {
+        appendSection("static", modelsSection);
+      }
+    }
+  }
+
+  const workspace = readFileOrEmpty(join(stateRoot, "state", "workspace.md"));
+  const workspaceSection = diffSection("workspace", workspace, () => {
+    return `<macrodata-workspace>\n${workspace || "_Empty_"}\n</macrodata-workspace>`;
+  });
+  if (injectStatics && cache.workspace?.content) {
+    appendSection("static", cache.workspace.content);
+  } else if (workspaceSection) {
+    appendSection("dynamic", workspaceSection);
+  }
+
+  const journalEntries = getRecentJournal(forCompaction ? 10 : 5, undefined, {
+    mode: forCompaction ? "full" : "summary",
+    maxChars: 200,
+  });
+  const journalRaw = JSON.stringify(journalEntries);
+  const journalSection = diffSection("journal", journalRaw, () => {
+    const renderedJournal = renderJournal(journalEntries);
+    return `<macrodata-journal>\n${renderedJournal || "_No entries_"}\n</macrodata-journal>`;
+  });
+  if (injectStatics && cache.journal?.content) {
+    appendSection("static", cache.journal.content);
+  } else if (journalSection) {
+    appendSection("dynamic", journalSection);
+  }
 
   if (!forCompaction) {
-    sections.push(`<macrodata-schedules>\n${schedulesFormatted}\n</macrodata-schedules>`);
-
-    // List state files
-    const stateDir = join(stateRoot, "state");
-    const stateFiles = existsSync(stateDir)
-      ? readdirSync(stateDir).filter(f => f.endsWith(".md")).map(f => `state/${f}`)
-      : [];
-
-    // List entity files (scan all subdirs dynamically)
-    const entitiesDir = join(stateRoot, "entities");
-    const entityFiles: string[] = [];
-    if (existsSync(entitiesDir)) {
-      for (const subdir of readdirSync(entitiesDir)) {
-        const dir = join(entitiesDir, subdir);
-        try {
-          if (!existsSync(dir) || !readdirSync(dir)) continue;
-          for (const f of readdirSync(dir).filter(f => f.endsWith(".md"))) {
-            entityFiles.push(`entities/${subdir}/${f}`);
-          }
-        } catch {
-          // Skip non-directories
-        }
-      }
-    }
-
-    const allFiles = [...stateFiles, ...entityFiles];
-    const filesFormatted = allFiles.length > 0
-      ? allFiles.map(f => `- ${f}`).join("\n")
-      : "_No files yet_";
-
-    // Read usage from shared file
-    const usagePath = new URL("../USAGE.md", import.meta.url).pathname;
-    const usage = existsSync(usagePath) ? readFileSync(usagePath, "utf-8").trim() : "";
-
-    if (usage) {
-      sections.push(`<macrodata-usage>\n${usage}\n</macrodata-usage>`);
-    }
-
-    sections.push(
-      `<macrodata-files root="${stateRoot}">\n${filesFormatted}\n</macrodata-files>`
-    );
-
-    // Fetch available models for scheduling tools
-    if (client) {
-      try {
-        const { data } = await client.config.providers();
-        if (data?.providers) {
-          // Collect all models with toolcall capability, excluding dated versions
-          type ModelInfo = { 
-            id: string; 
-            family?: string; 
-            release_date?: string;
-            capabilities?: { toolcall?: boolean };
-          };
-          const allModels: { fullId: string; family: string; releaseDate: string }[] = [];
-          
-          for (const provider of data.providers) {
-            if (provider.models) {
-              for (const [modelId, model] of Object.entries(provider.models)) {
-                const m = model as ModelInfo;
-                // Skip dated versions and models without toolcall
-                if (/-\d{8}$/.test(modelId) || !m.capabilities?.toolcall) continue;
-                
-                allModels.push({
-                  fullId: `${provider.id}/${modelId}`,
-                  family: m.family || `${provider.id}/${modelId}`,
-                  releaseDate: m.release_date || "1970-01-01",
-                });
-              }
-            }
-          }
-          
-          // Group by family and pick latest per family
-          const byFamily = new Map<string, typeof allModels[0]>();
-          for (const model of allModels) {
-            const existing = byFamily.get(model.family);
-            if (!existing || model.releaseDate > existing.releaseDate) {
-              byFamily.set(model.family, model);
-            }
-          }
-          
-          const models = Array.from(byFamily.values()).map(m => m.fullId).sort();
-          if (models.length > 0) {
-            sections.push(`<macrodata-models>\nAvailable models for scheduling: ${models.join(", ")}\n</macrodata-models>`);
-          }
-        }
-      } catch {
-        // Ignore - models just won't be in context
-      }
+    const schedules = getSchedules();
+    const schedulesRaw = JSON.stringify(schedules);
+    const schedulesSection = diffSection("schedules", schedulesRaw, () => {
+      return `<macrodata-schedules>\n${renderSchedules(schedules)}\n</macrodata-schedules>`;
+    });
+    if (injectStatics && cache.schedules?.content) {
+      appendSection("static", cache.schedules.content);
+    } else if (schedulesSection) {
+      appendSection("dynamic", schedulesSection);
     }
   }
 
-  return `<macrodata>\n${sections.join("\n\n")}\n</macrodata>`;
+  const staticContext =
+    staticSections.length > 0
+      ? `<macrodata section="static">\n${staticSections.join("\n\n")}\n</macrodata>`
+      : null;
+  const dynamicContext =
+    dynamicSections.length > 0
+      ? `<macrodata section="dynamic">\n${dynamicSections.join("\n\n")}\n</macrodata>`
+      : null;
+
+  return { staticContext, dynamicContext };
+}
+
+export async function formatContextForPrompt(
+  options: FormatOptions = {}
+): Promise<string | null> {
+  const { staticContext, dynamicContext } = await formatContextBlocksForPrompt(options);
+  if (staticContext && dynamicContext) {
+    return `<macrodata>\n${staticContext}\n\n${dynamicContext}\n</macrodata>`;
+  }
+  if (staticContext) {
+    return `<macrodata>\n${staticContext}\n</macrodata>`;
+  }
+  if (dynamicContext) {
+    return `<macrodata>\n${dynamicContext}\n</macrodata>`;
+  }
+  return null;
 }

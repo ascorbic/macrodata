@@ -49,7 +49,9 @@ export function getStateRoot(): string {
 
   const config = readConfig();
   if (config && typeof config.root === "string" && config.root.trim().length > 0) {
-    return config.root;
+    const root = config.root.trim();
+    // Expand ~ to home directory
+    return root.startsWith("~/") ? join(homedir(), root.slice(2)) : root;
   }
 
   return DEFAULT_ROOT;

@@ -178,7 +178,7 @@ interface ContextCache {
   workspace: SectionCache | null;
   schedules: SectionCache | null;
   journal: SectionCache | null;
-  human: string | null;
+  human: SectionCache | null;
   usage: string | null;
   files: string | null;
   models: ModelsCache | null;
@@ -211,7 +211,7 @@ function hashContent(content: string): string {
 }
 
 function diffSection(
-  key: "identity" | "today" | "state" | "workspace" | "schedules" | "journal",
+  key: "identity" | "today" | "state" | "workspace" | "schedules" | "journal" | "human",
   rawContent: string,
   render: () => string,
 ): string | null {
@@ -247,6 +247,48 @@ function extractStub(content: string, fallback: string): string {
   if (!compact) return fallback;
   if (compact.length <= 220) return compact;
   return `${compact.slice(0, 217)}...`;
+}
+
+function extractSection(content: string, heading: string): string | null {
+  const pattern = new RegExp(`##\\s*${heading}\\s*\\n([\\s\\S]*?)(?:\\n##\\s|$)`, "i");
+  const match = content.match(pattern);
+  return match?.[1]?.trim() || null;
+}
+
+function extractFirstBullet(sectionContent: string): string | null {
+  const lines = sectionContent
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    if (line.startsWith("- ")) {
+      return line.slice(2).trim();
+    }
+  }
+
+  return null;
+}
+
+function extractHumanStub(content: string): string {
+  if (!content.trim()) return "_Unknown_";
+
+  const name = content.match(/^\s*-\s*\*\*Name:\*\*\s*(.+)$/m)?.[1]?.trim();
+  const timezone = content.match(/^\s*-\s*\*\*Timezone:\*\*\s*(.+)$/m)?.[1]?.trim();
+  const locationSection = extractSection(content, "Location");
+  const location = locationSection ? extractFirstBullet(locationSection) : null;
+
+  const parts = [
+    name ? `Name: ${name}` : null,
+    timezone ? `Timezone: ${timezone}` : null,
+    location ? `Location: ${location}` : null,
+  ].filter(Boolean);
+
+  if (parts.length > 0) {
+    return parts.join(" | ");
+  }
+
+  return extractStub(content, "_Unknown_");
 }
 
 function ensureAnchoredStateFile(stateRoot: string): void {
@@ -464,6 +506,7 @@ Use this pre-detected info during onboarding instead of running detection script
   const identity = readFileOrEmpty(identityPath);
   const today = readFileOrEmpty(join(stateRoot, "state", "today.md"));
   const anchoredState = readFileOrEmpty(join(stateRoot, "state", "state.md"));
+  const human = readFileOrEmpty(join(stateRoot, "state", "human.md"));
 
   appendSection(
     "static",
@@ -473,6 +516,11 @@ Use this pre-detected info during onboarding instead of running detection script
   appendSection(
     "static",
     `<macrodata-today-stub>\n${extractStub(today, "_Empty_")}\n</macrodata-today-stub>`,
+    true,
+  );
+  appendSection(
+    "static",
+    `<macrodata-human-stub>\n${extractHumanStub(human)}\n</macrodata-human-stub>`,
     true,
   );
 
@@ -503,12 +551,16 @@ Use this pre-detected info during onboarding instead of running detection script
     appendSection("dynamic", stateSection);
   }
 
-  if (injectStatics) {
-    if (cache.human === null) {
-      cache.human = readFileOrEmpty(join(stateRoot, "state", "human.md"));
-    }
-    appendSection("static", `<macrodata-human>\n${cache.human || "_Empty_"}\n</macrodata-human>`);
+  const humanSection = diffSection("human", human, () => {
+    return `<macrodata-human>\n${human || "_Empty_"}\n</macrodata-human>`;
+  });
+  if (injectStatics && cache.human?.content) {
+    appendSection("static", cache.human.content, true);
+  } else if (humanSection) {
+    appendSection("dynamic", humanSection);
+  }
 
+  if (injectStatics) {
     if (!forCompaction) {
       if (cache.usage === null) {
         const usagePath = new URL("../USAGE.md", import.meta.url).pathname;

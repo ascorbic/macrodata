@@ -132,7 +132,7 @@ export function getRecentJournal(
   return entries.slice(0, count);
 }
 
-function upsertSection(markdown: string, heading: string, bodyLines: string[]): string {
+export function upsertSection(markdown: string, heading: string, bodyLines: string[]): string {
   const sectionHeader = `## ${heading}`;
   const newBody = bodyLines.join("\n").trim();
   const replacement = `${sectionHeader}\n${newBody}`;
@@ -146,6 +146,43 @@ function upsertSection(markdown: string, heading: string, bodyLines: string[]): 
   const trimmed = markdown.trim();
   if (!trimmed) return replacement;
   return `${trimmed}\n\n${replacement}`;
+}
+
+function getSectionLines(markdown: string, heading: string): string[] {
+  const escapedHeader = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sectionRegex = new RegExp(`^## ${escapedHeader}\\n([\\s\\S]*?)(?=\\n## |$)`, "m");
+  const match = markdown.match(sectionRegex);
+  if (!match || !match[1]) {
+    return [];
+  }
+
+  return match[1]
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export function updateHumanProfile(options: { section: string; content: string }): void {
+  const section = options.section.trim();
+  const content = options.content.replace(/\s+/g, " ").trim();
+  if (!section || !content) {
+    throw new Error("section and content are required");
+  }
+
+  ensureDirectories();
+
+  const stateRoot = getStateRoot();
+  const humanPath = join(stateRoot, "state", "human.md");
+  const existing = existsSync(humanPath) ? readFileSync(humanPath, "utf-8") : "# Human Profile\n";
+
+  const nextLine = `- ${content}`;
+  const currentLines = getSectionLines(existing, section);
+  const mergedLines = currentLines.includes(nextLine)
+    ? currentLines
+    : [...currentLines, nextLine];
+
+  const next = upsertSection(existing, section, mergedLines);
+  writeFileSync(humanPath, `${next.trim()}\n`);
 }
 
 function updateAnchoredState(options: {

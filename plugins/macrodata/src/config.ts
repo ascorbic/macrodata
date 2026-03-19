@@ -10,7 +10,7 @@ import { homedir } from "os";
 import { join } from "path";
 
 const DEFAULT_ROOT = join(homedir(), ".config", "macrodata");
-const DEFAULT_ENABLED_AGENTS = ["default", "build", "plan"] as const;
+const DEFAULT_ENABLED_AGENTS = ["*"] as const;
 
 interface MacrodataConfig {
   root?: unknown;

@@ -80,6 +80,17 @@ For each action in all results:
 log_journal(topic="distill-summary", content="Processed N conversations. Extracted X actions, Y facts.")
 ```
 
+**Save a conversation summary for context recovery:**
+```
+save_conversation_summary(
+  summary: "One paragraph describing what was accomplished today across all conversations",
+  keyDecisions: [...all decisions extracted across conversations],
+  openThreads: [...any open items or follow-ups identified]
+)
+```
+
+This populates `get_recent_summaries`, enabling lightweight context recovery without a full distillation pass.
+
 **Update entity files with facts:**
 - Group facts by topic
 - For each topic, read existing entity file (if any)

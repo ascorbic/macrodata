@@ -34,6 +34,17 @@
 				]
 			}
 		],
+		"SessionEnd": [
+			{
+				"hooks": [
+					{
+						"type": "prompt",
+						"prompt": "This session is ending. If it wasn't compacted during this session, use save_conversation_summary to capture:\n- What was accomplished\n- Key decisions made\n- Any open threads that need follow-up\n\nBe concise. Skip this if a compaction summary was already saved.",
+						"timeout": 30
+					}
+				]
+			}
+		],
 		"PreCompact": [
 			{
 				"hooks": [

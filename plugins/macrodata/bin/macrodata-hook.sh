@@ -28,13 +28,22 @@ PIDFILE="$STATE_ROOT/.daemon.pid"
 PENDING_CONTEXT="$STATE_ROOT/.pending-context"
 LOGFILE="$STATE_ROOT/.daemon.log"
 JOURNAL_DIR="$STATE_ROOT/journal"
-LASTMOD_FILE="$STATE_ROOT/.context-lastmod.json"
 
 # State files
 IDENTITY="$STATE_ROOT/state/identity.md"
 TODAY="$STATE_ROOT/state/today.md"
 HUMAN="$STATE_ROOT/state/human.md"
 WORKSPACE="$STATE_ROOT/state/workspace.md"
+FLAGS="$STATE_ROOT/state/flags.md"
+
+# Per-section injection caps (bytes) — a backstop against runaway growth, not a
+# tight corset. State is bounded working memory; a file over cap is truncated here
+# with a marker. The skills keep files well under this; the cap only catches failures.
+CAP_IDENTITY=4000
+CAP_TODAY=4000
+CAP_HUMAN=4000
+CAP_WORKSPACE=4000
+CAP_FLAGS=4000
 
 is_daemon_running() {
     if [ -f "$PIDFILE" ]; then
@@ -85,29 +94,6 @@ inject_pending_context() {
     fi
 }
 
-store_lastmod() {
-    jq -n \
-        --arg id "$(stat -f %m "$IDENTITY" 2>/dev/null || echo 0)" \
-        --arg today "$(stat -f %m "$TODAY" 2>/dev/null || echo 0)" \
-        --arg human "$(stat -f %m "$HUMAN" 2>/dev/null || echo 0)" \
-        --arg ws "$(stat -f %m "$WORKSPACE" 2>/dev/null || echo 0)" \
-        '{identity:$id, today:$today, human:$human, workspace:$ws}' > "$LASTMOD_FILE"
-}
-
-check_files_changed() {
-    [ ! -f "$LASTMOD_FILE" ] && return 0
-
-    local stored
-    stored=$(cat "$LASTMOD_FILE")
-
-    [ "$(stat -f %m "$IDENTITY" 2>/dev/null || echo 0)" != "$(echo "$stored" | jq -r '.identity')" ] && return 0
-    [ "$(stat -f %m "$TODAY" 2>/dev/null || echo 0)" != "$(echo "$stored" | jq -r '.today')" ] && return 0
-    [ "$(stat -f %m "$HUMAN" 2>/dev/null || echo 0)" != "$(echo "$stored" | jq -r '.human')" ] && return 0
-    [ "$(stat -f %m "$WORKSPACE" 2>/dev/null || echo 0)" != "$(echo "$stored" | jq -r '.workspace')" ] && return 0
-
-    return 1
-}
-
 get_recent_journal() {
     local count="${1:-5}"
     
@@ -156,10 +142,13 @@ list_state_files() {
 }
 
 get_usage() {
-    local usage_file="$SCRIPT_DIR/../USAGE.md"
-    if [ -f "$usage_file" ]; then
-        cat "$usage_file"
-    fi
+    cat <<'USAGE'
+- **state/** files are always here but BOUNDED (a screenful each, hard-capped). Keep only what's live; move detail out.
+- **flags.md** is how things reach the user across sessions — one line + pointer. Surface, don't hoard.
+- **journal** (`log_journal`) is durable and retrievable via `search_memory`. Writing it down is remembering, not forgetting — put detail here.
+- **entities/** hold persistent per-project/topic notes (searchable). Eviction is expected: resolved/aging items leave state for the journal/entity, leaving a pointer.
+- Search before claiming ignorance. Full guide: `plugins/macrodata/USAGE.md`.
+USAGE
 }
 
 get_schedules() {
@@ -181,6 +170,19 @@ get_schedules() {
         echo "_No active schedules_"
     else
         echo -e "$schedules"
+    fi
+}
+
+cap_file() {
+    local file="$1" max="$2"
+    if [ ! -f "$file" ]; then echo "_Empty_"; return; fi
+    local size
+    size=$(wc -c < "$file" | tr -d ' ')
+    if [ "$size" -le "$max" ]; then
+        cat "$file"
+    else
+        head -c "$max" "$file" | sed -e '$ d'
+        printf '\n[…truncated: %s of %s bytes shown. This file is over its budget — compact it. Detail lives in the journal; use search_memory / get_recent_journal.]\n' "$max" "$size"
     fi
 }
 
@@ -207,24 +209,24 @@ $USER_INFO
 </macrodata>"
     else
         CONTEXT="<macrodata>
-<macrodata-identity>
-$(cat "$IDENTITY" 2>/dev/null || echo "_Not configured_")
-</macrodata-identity>
+<macrodata-flags>
+$([ -s "$FLAGS" ] && cap_file "$FLAGS" "$CAP_FLAGS" || echo "_No open flags_")
+</macrodata-flags>
 
 <macrodata-today>
-$(cat "$TODAY" 2>/dev/null || echo "_Empty_")
+$(cap_file "$TODAY" "$CAP_TODAY")
 </macrodata-today>
 
-<macrodata-human>
-$(cat "$HUMAN" 2>/dev/null || echo "_Empty_")
-</macrodata-human>
+<macrodata-identity>
+$(cap_file "$IDENTITY" "$CAP_IDENTITY")
+</macrodata-identity>
 
 <macrodata-workspace>
-$(cat "$WORKSPACE" 2>/dev/null || echo "_Empty_")
+$(cap_file "$WORKSPACE" "$CAP_WORKSPACE")
 </macrodata-workspace>
 
 <macrodata-journal>
-$(get_recent_journal 5)
+$(get_recent_journal 3)
 </macrodata-journal>
 
 <macrodata-schedules>
@@ -254,18 +256,14 @@ case "$1" in
         start_daemon
         signal_daemon_reload
         inject_static_context
-        store_lastmod
         ;;
     prompt-submit)
         # Restart daemon if dead
         start_daemon
-        # Inject any pending context
+        # Inject only the daemon's targeted deltas. The full context is injected
+        # once at session-start and stays in the cached prefix; re-dumping it here
+        # would bloat the running context every turn and defeat prompt caching.
         inject_pending_context
-        # Re-inject static context if state files changed
-        if check_files_changed; then
-            inject_static_context
-            store_lastmod
-        fi
         ;;
     *)
         echo "Usage: $0 {session-start|prompt-submit}" >&2

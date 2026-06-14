@@ -1,5 +1,33 @@
 # @macrodata/opencode
 
+## 0.3.0
+
+### Minor Changes
+
+- [#30](https://github.com/ascorbic/macrodata/pull/30) [`2807c49`](https://github.com/ascorbic/macrodata/commit/2807c492349f6dbcb715707ab7a68a556aac7481) Thanks [@ascorbic](https://github.com/ascorbic)! - Budget the injected context and add a flags channel.
+
+  State files are now treated as a bounded working set instead of an append-only log. The SessionStart injection is byte-capped per section, so a bloated file can no longer blow the whole context past the harness limit (which was silently truncating it to a preview and dropping most of it). A new `state/flags.md` channel carries items to the user across sessions and is injected first so it always survives. The prompt-submit full re-dump that defeated prompt caching is removed — state changes now arrive as targeted deltas. `USAGE.md` and the memory-maintenance/dreamtime skills are updated to keep state bounded with explicit eviction (detail belongs in the journal and entity files, which are durable and searchable).
+
+### Patch Changes
+
+- [#17](https://github.com/ascorbic/macrodata/pull/17) [`bf421cb`](https://github.com/ascorbic/macrodata/commit/bf421cba85a095391b6e85cc7864f3de622aee28) Thanks [@jasikpark](https://github.com/jasikpark)! - Log malformed lines in conversation parsing instead of silently skipping them. Corrupted index state now warns on reset. Makes it possible to diagnose why a session isn't appearing in search results.
+
+## 0.2.1
+
+### Patch Changes
+
+- [#12](https://github.com/ascorbic/macrodata/pull/12) [`a8906f5`](https://github.com/ascorbic/macrodata/commit/a8906f5c98db2c16fe0d44f29c8d9ed339909d23) Thanks [@ascorbic](https://github.com/ascorbic)! - Update distill skill for SQLite session storage format
+
+## 0.2.0
+
+### Minor Changes
+
+- [#9](https://github.com/ascorbic/macrodata/pull/9) [`9c37516`](https://github.com/ascorbic/macrodata/commit/9c37516367cec8474483373ace3b529ea87410f6) Thanks [@ascorbic](https://github.com/ascorbic)! - Read OpenCode conversations from SQLite instead of file-based storage. Uses `bun:sqlite` with no new dependencies. Fixes project resolution by joining session to project worktree. Requires OpenCode v1.2.0+.
+
+### Patch Changes
+
+- [#10](https://github.com/ascorbic/macrodata/pull/10) [`8c4d770`](https://github.com/ascorbic/macrodata/commit/8c4d7703ee52cb3809d0c4ab132849530f003174) Thanks [@ascorbic](https://github.com/ascorbic)! - Move context injection from chat.message hook to system prompt transform. Fixes session titles all showing as "innie memory system setup" because synthetic message parts were sent to the title generation LLM.
+
 ## 0.1.3
 
 ### Patch Changes

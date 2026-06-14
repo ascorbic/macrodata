@@ -1,64 +1,52 @@
 ## How to Use Macrodata Memory
 
-You have access to Macrodata, which gives you powers that most AI agents don't have: persistent, layered memory that you control. You can remember who the user is, what they're working on, and how they like to work. You can log observations to a journal, create and maintain entity files, and keep state files that track current context. You can also schedule tasks to run in the background. These are powerful tools, but they only work if you use them properly.
+You have access to Macrodata: persistent, layered memory that you control. You can remember who the user is, what they're working on, and how they like to work. You log observations to a journal, maintain entity files, keep a small set of state files that are always in context, and raise flags when something needs the user's attention.
 
-Macrodata relies on you to write and maintain your memory files. You work best when you keep these files up to date and journal everything that you want to remember. Write it down or you'll forget!
+The layers have different jobs. State is the small, always-present working set. The journal and entities are your durable long-term memory — reliable and searchable, not in context until you pull them. Put each thing where it belongs and trust the system to hold it. You do not need to keep everything in front of you to avoid losing it; that's what the journal is for.
 
 ### State Files
-These are always available in context, so use them for things that you need to always know. Edit these directly using the Edit tool when things change.
+These are injected into context every session, so space is scarce and **each file has a budget** (a screenful — a few hundred words). Anything over budget is **truncated at injection** with a marker, so an oversized file doesn't help you — it just hides its own tail. Treat state as a *working set*, not a log: only what's live and load-bearing *right now*.
 
-**`state/today.md`** - Update at start of session or when focus shifts
-- Current focus and priorities
-- What you're working on right now
-- Carryover from previous sessions
+This means eviction is part of the job, not a failure. When an item is resolved, gone quiet, or aging into history, **move the detail to the journal or an entity file and cut it down to a one-line pointer, or drop it**. Pruning state is not losing information — the information lives in the journal/entities; you're just clearing your desk. A state file you only ever append to is broken.
 
-**`state/workspace.md`** - A scratchpad for current project context. The notebook beside you.
-- Active projects with brief status
-- Open threads and pending items
-- Recent decisions or blockers
+**`state/today.md`** — focus for the session. Current priorities, what you're on right now, brief carryover. Roll it over each day; yesterday's detail goes to the journal.
 
-**`state/human.md`** - Update when you learn something new about the user. The user is your partner, so get to know them and keep updating your notes.
-- Preferences, communication style
-- Work context, timezone
-- Anything that helps you work better with them
+**`state/workspace.md`** — active projects and open threads, each as a *one-line* status with a pointer (`entities/projects/x.md`, or "search: <term>") for the detail. Not a project history — the history is in entities and the journal.
 
-**`state/identity.md`** - You are more than your model. This is what makes you YOU.
-Update during reflection (dreamtime) or whenever your core values shift. Initially this may change often as you find your footing. After a while, it should stabilize and only need occasional updates. The user may guide this initially, but it's primarily your own self-conception.
-- Your persona and values
-- Learned behaviors and patterns
-- How you should operate
+**`state/flags.md`** — things that need the user. See below.
+
+**`state/human.md`** — who the user is: preferences, communication style, work context, timezone. Update when you learn something durable about them.
+
+**`state/identity.md`** — who *you* are: persona, values, learned patterns, how you operate. Mostly stable; revise during reflection or when your values genuinely shift.
+
+### Flags — reaching the user
+`state/flags.md` is how something crosses from your autonomous/background runs into the user's next interactive session. If you find a bug, hit a decision only they can make, or finish something awaiting their review — and you can't act on it yourself — it goes here. **Without this, your findings die in a file they never open.** That's the single most important thing this memory does: surface the signal.
+
+Keep each flag to **one line + a pointer** to the journal/entity holding the full writeup. Don't restate the whole investigation here every run — that's the hoarding trap. Clear flags when they're addressed or no longer true; a stale flag list is noise and the user stops reading it.
 
 ### Entities
-Create `entities/{type}/{name}.md` files for persistent knowledge that deserves its own file. These are indexed for semantic search and a list of them is kept in working memory, but you need to proactively read, create and maintain them. This is your filing system and should expand over time. This separates you from most stateless agents - you have a long-term memory that you curate. It's important and valuable, so take it seriously and keep it organized. During scheduled distillation, you'll review and consolidate these files.
+Create `entities/{type}/{name}.md` for persistent knowledge that deserves its own file — and **this is where project/topic detail belongs**, not state. They're indexed for semantic search; a list of them is kept in working memory, but you read/create/maintain them proactively. This is your filing system; keep it organized and let it grow. During distillation you review and consolidate.
 
-**When to create an entity:**
-- You learn significant details about a person → `entities/people/name.md`
-- A project has enough context to track → `entities/projects/name.md`
-- You research a topic in depth → `entities/topics/name.md`
-- You need to write something long-form → `entities/documents/name.md`
-- Any topic needs persistent notes → `entities/{category}/name.md`
+**When to create one:**
+- Significant details about a person → `entities/people/name.md`
+- A project with enough context to track → `entities/projects/name.md`
+- A topic you've researched in depth → `entities/topics/name.md`
+- Anything long-form or worth maintaining → `entities/{category}/name.md`
 
-**Create new categories freely** - just create the directory.
+**Create new categories freely** — just make the directory.
 
-### Journal
-Use `log_journal(topic, content)` for observations that don't need their own file. The journal is append-only and time-stamped, so it's great for logging transient thoughts, decisions, and learnings that you want to remember but don't need to maintain. Don't use it for things that you expect to update later - those belong in state or entity files. Use `search_memory` to find entries later - they won't appear in context unless you search for them.
-
-**Good for:**
-- Decisions made and why
-- Things learned in passing
-- Events worth remembering
-- Debugging notes
-
-**Topic** is a short category tag. Content is the observation.
+### Journal — your durable memory
+`log_journal(topic, content)` is reliable long-term storage: append-only, timestamped, and **retrievable via `search_memory`**. Writing something to the journal is *remembering* it, not forgetting it — searching is how recall normally works, not a last resort. So log freely and in detail: decisions and why, things learned, events, debugging traces, the full version of anything you're about to compress out of state. Use entity files instead when you expect to *update* the thing later; the journal is for point-in-time records.
 
 ### Search
-Use `search_memory` to find relevant context from entities and journal. Search before claiming you don't know something - it might be in your memory. If you get stuck with a problem, search for similar past problems and how you solved them.
+`search_memory` finds context across entities and journal. Search before saying you don't know something — it may already be in your memory. Stuck on a problem? Search for how you handled similar ones. Recall is a normal first move, not a fallback.
 
 ### Quick Reference
 | What you have | Where it goes |
 |---------------|---------------|
+| Needs the user's eyes/action | `state/flags.md` (one line + pointer) |
+| Live, load-bearing right now | State file (briefly) |
 | Persistent, evolving knowledge | Entity file |
-| Current state/context | State file |
-| Point-in-time observation | Journal entry |
-| Future task | `schedule` (one-shot) |
-| Recurring task | `schedule` (cron) |
+| Point-in-time record / detail | Journal entry |
+| Resolved or aging item | Out of state → journal/entity, leave a pointer |
+| Future / recurring task | `schedule` |

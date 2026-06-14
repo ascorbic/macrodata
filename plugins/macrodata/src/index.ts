@@ -62,7 +62,7 @@ interface Schedule {
   description: string;
   payload: string;
   agent?: "opencode" | "claude"; // Which agent CLI to trigger
-  model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-5")
+  model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-6")
   createdAt: string;
 }
 
@@ -372,7 +372,7 @@ server.tool(
     expression: z.string().describe("Cron expression (e.g., '0 9 * * *') or ISO datetime (e.g., '2026-01-31T10:00:00')"),
     description: z.string().describe("What this reminder is for"),
     payload: z.string().describe("Message to process when reminder fires"),
-    model: z.string().optional().describe("Model to use (e.g., 'anthropic/claude-opus-4-5' for deep thinking tasks)"),
+    model: z.string().optional().describe("Model to use (e.g., 'anthropic/claude-opus-4-6' for deep thinking tasks)"),
   },
   async ({ type, id, expression, description, payload, model }) => {
     const schedule: Schedule = {

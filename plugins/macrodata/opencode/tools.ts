@@ -213,6 +213,7 @@ export const searchConversationsTool = tool({
     }
 
     const results = await searchConversations(args.query, {
+      currentProject: process.cwd(),
       limit: args.limit || 5,
       projectOnly: args.projectOnly,
     });

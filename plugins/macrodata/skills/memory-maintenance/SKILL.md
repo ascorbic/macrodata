@@ -35,22 +35,26 @@ Use these to inform state file updates.
 
 ### 3. State File Updates
 
-Review each state file and update if needed:
+State files are a bounded working set, not a log. Each has a budget (a screenful); content over budget is truncated at injection, so a bloated file helps no one. **The detail belongs in the journal and entity files — state holds only what's live and load-bearing now, each item a one-line status with a pointer to where the detail lives.** Updating state means as much cutting as adding.
 
 **today.md**
-- Clear completed items
-- Note anything that carried over
-- Leave empty or minimal for morning prep to fill
+- Clear completed items; move yesterday's detail to the journal
+- Keep only carryover that's still live; leave it minimal for morning prep
 
 **workspace.md**
-- Update active projects list based on distilled actions
-- Add/remove open threads
-- Note any blocked items or waiting-on dependencies
+- Each active project / open thread = one line: status + a pointer (`entities/projects/x.md` or "search: <term>")
+- If a bullet has grown into a paragraph, that detail goes to the project's entity file and the bullet becomes a pointer
+- Drop resolved threads (the record is in the journal)
 
 **human.md**
-- Any new preferences or patterns from distilled facts?
-- Communication style insights?
-- Only update if genuinely new information
+- Only genuinely new, durable facts about the user. Rare updates.
+
+### 3b. Flags Review
+
+Review `state/flags.md` — the channel that carries items to the user across sessions.
+- For each open flag: is it still true? If addressed/merged/resolved/obsolete, remove it.
+- Did today's work surface anything the user needs to see (a bug you can't fix, a decision only they can make, work awaiting their review)? Add it — **one line + a pointer** to the journal/entity with the full writeup. Do not paste the investigation into flags.md.
+- Keep the list short and live. A stale flag list gets ignored.
 
 ### 4. Entity Updates
 
@@ -59,15 +63,20 @@ Review `entities/people/` and `entities/projects/`:
 - Project status changes?
 - New projects to create files for?
 
-### 5. Prune Stale Info
+### 5. Compact State to Budget
 
-Look for outdated information:
-- Completed todos still listed as active
-- Old context that's no longer relevant
-- Temporary notes that should be removed
-- Duplicated information across files
+State files must stay within budget. Check them:
+```bash
+wc -c ~/.config/macrodata/state/*.md
+```
+Rough targets: today ≲ 3 KB, workspace ≲ 3 KB, human ≲ 3.5 KB, flags ≲ 3 KB, identity ≲ 3 KB. (Hard cap is 4 KB each — content over that is truncated at injection.)
 
-Remove or archive as appropriate.
+For any file over budget, compact it — this is expected maintenance, not optional:
+- Move the detail to the journal (`log_journal`) or the relevant entity file **first**, so nothing is lost
+- Then cut the state entry down to a one-line pointer, or remove it if it's resolved
+- Also clear: completed todos still listed active, context no longer relevant, info duplicated across files
+
+A file that only ever grows is the bug this step exists to catch. After compacting, re-run `wc -c` to confirm you're under budget.
 
 ### 6. Index Maintenance
 

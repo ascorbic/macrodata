@@ -65,7 +65,7 @@ Review workspace.md and recent context:
 - Questions raised but not answered?
 - Ideas mentioned but not explored?
 
-Update workspace.md open threads section.
+Record the detail in the journal or the relevant entity file. In workspace.md, keep open threads as one-line pointers only — state is a bounded working set, not a log (see USAGE.md). If a thread needs the user (a bug you can't fix, a decision only they can make, work awaiting review), add a one-line flag to `state/flags.md` pointing at the journal/entity with the writeup. Don't paste investigations into state.
 
 ### Project Connections
 
@@ -94,13 +94,14 @@ Journal observations.
 
 ## Output
 
-Update relevant files directly:
+Update relevant files directly. Detail goes to the journal/entities; state stays a bounded set of one-line pointers (see USAGE.md). Anything the user needs to see goes to `state/flags.md` as one line + a pointer.
 - identity.md - role/values refinements
 - human.md - new understanding
-- workspace.md - open threads
+- workspace.md - open threads, one line each (pointer to entity/journal for detail)
+- flags.md - anything needing the user's attention/decision/action
 - topics/ - new or updated topics
 - entities/ - project/people updates
-- journal - learnings, observations, ideas
+- journal - learnings, observations, ideas (the full detail)
 
 Write a dreamtime journal entry summarizing:
 ```

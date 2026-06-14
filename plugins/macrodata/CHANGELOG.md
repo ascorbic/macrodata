@@ -1,5 +1,17 @@
 # @macrodata/opencode
 
+## 0.3.0
+
+### Minor Changes
+
+- [#30](https://github.com/ascorbic/macrodata/pull/30) [`2807c49`](https://github.com/ascorbic/macrodata/commit/2807c492349f6dbcb715707ab7a68a556aac7481) Thanks [@ascorbic](https://github.com/ascorbic)! - Budget the injected context and add a flags channel.
+
+  State files are now treated as a bounded working set instead of an append-only log. The SessionStart injection is byte-capped per section, so a bloated file can no longer blow the whole context past the harness limit (which was silently truncating it to a preview and dropping most of it). A new `state/flags.md` channel carries items to the user across sessions and is injected first so it always survives. The prompt-submit full re-dump that defeated prompt caching is removed — state changes now arrive as targeted deltas. `USAGE.md` and the memory-maintenance/dreamtime skills are updated to keep state bounded with explicit eviction (detail belongs in the journal and entity files, which are durable and searchable).
+
+### Patch Changes
+
+- [#17](https://github.com/ascorbic/macrodata/pull/17) [`bf421cb`](https://github.com/ascorbic/macrodata/commit/bf421cba85a095391b6e85cc7864f3de622aee28) Thanks [@jasikpark](https://github.com/jasikpark)! - Log malformed lines in conversation parsing instead of silently skipping them. Corrupted index state now warns on reset. Makes it possible to diagnose why a session isn't appearing in search results.
+
 ## 0.2.1
 
 ### Patch Changes

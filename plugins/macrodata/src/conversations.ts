@@ -120,7 +120,7 @@ async function getConversationIndex(): Promise<LocalIndex> {
 
 /**
  * Decode project directory name back to path
- * e.g., "-Users-mkane-Repos-workers-sdk" -> "/Users/mkane/Repos/workers-sdk"
+ * e.g., "-Users-alex-Repos-my-project" -> "/Users/alex/Repos/my-project"
  */
 function decodeProjectPath(encoded: string): string {
   return encoded.replace(/^-/, "/").replace(/-/g, "/");

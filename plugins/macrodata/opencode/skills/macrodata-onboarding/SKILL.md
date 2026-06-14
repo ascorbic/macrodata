@@ -301,7 +301,7 @@ _[If a code directory like ~/Code or ~/Projects exists, also offer that as an op
 
 **Agent:** Got it. Now, what should I call you?
 
-**User:** Matt
+**User:** Alex
 
 **Agent:** I can see from your system that you're [name from git config], GitHub username [from gh cli], and you're in the [timezone] timezone. Is that right?
 

@@ -33,7 +33,7 @@ function loadIndexState(): IndexState {
     try {
       return JSON.parse(readFileSync(statePath, "utf-8"));
     } catch {
-      // Corrupted state, start fresh
+      console.warn("[Conversations] Index state corrupted, starting fresh");
     }
   }
   return { files: {}, lastUpdate: "" };
@@ -250,6 +250,7 @@ function parseConversationFile(filePath: string, projectPath: string): Conversat
     const lines = content.trim().split("\n").filter(Boolean);
 
     let currentUser: { msg: ConversationMessage; text: string } | null = null;
+    let malformedLines = 0;
 
     for (const line of lines) {
       try {
@@ -292,8 +293,12 @@ function parseConversationFile(filePath: string, projectPath: string): Conversat
           currentUser = null; // Reset for next exchange
         }
       } catch {
-        // Skip malformed lines
+        malformedLines++;
       }
+    }
+
+    if (malformedLines > 0) {
+      console.warn(`[Conversations] Skipped ${malformedLines} malformed lines in ${filePath}`);
     }
   } catch (err) {
     console.error(`[Conversations] Failed to parse ${filePath}: ${String(err)}`);
@@ -594,6 +599,7 @@ export async function expandConversation(
   const messages: Array<{ role: string; content: string; timestamp?: string; uuid?: string }> = [];
   let project = "";
   let branch: string | undefined;
+  let malformedLines = 0;
 
   // Parse all messages
   for (const line of lines) {
@@ -638,8 +644,12 @@ export async function expandConversation(
         }
       }
     } catch {
-      // Skip malformed lines
+      malformedLines++;
     }
+  }
+
+  if (malformedLines > 0) {
+    console.warn(`[Conversations] Skipped ${malformedLines} malformed lines in ${sessionPath}`);
   }
 
   // Find the target message index

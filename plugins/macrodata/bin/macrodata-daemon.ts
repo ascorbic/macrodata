@@ -60,7 +60,7 @@ interface Schedule {
   description: string;
   payload: string;
   agent?: "opencode" | "claude"; // Which agent to trigger
-  model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-5")
+  model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-6")
   createdAt: string;
 }
 

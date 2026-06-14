@@ -76,11 +76,17 @@ describe("hook script", () => {
       expect(output).toContain("</macrodata-today>");
     });
 
-    test("includes human section", () => {
+    test("includes flags section", () => {
       const output = runHook(ctx, "session-start");
-      expect(output).toContain("<macrodata-human>");
-      expect(output).toContain("Test user");
-      expect(output).toContain("</macrodata-human>");
+      expect(output).toContain("<macrodata-flags>");
+    });
+
+    test("human is available as a file, not force-injected", () => {
+      // human.md is not injected as a section (kept under the cmux size cap);
+      // it's listed in files so the agent reads it on demand.
+      const output = runHook(ctx, "session-start");
+      expect(output).not.toContain("<macrodata-human>");
+      expect(output).toContain("state/human.md");
     });
 
     test("includes workspace section", () => {
@@ -126,16 +132,6 @@ describe("hook script", () => {
       const content = readFileSync(contextFile, "utf-8");
       expect(content).toContain("<macrodata>");
     });
-
-    test("stores lastmod file", () => {
-      runHook(ctx, "session-start");
-      const lastmodFile = join(ctx.root, ".context-lastmod.json");
-      expect(existsSync(lastmodFile)).toBe(true);
-
-      const content = JSON.parse(readFileSync(lastmodFile, "utf-8"));
-      expect(content).toHaveProperty("identity");
-      expect(content).toHaveProperty("today");
-    });
   });
 
   describe("first-run detection", () => {
@@ -166,22 +162,6 @@ describe("hook script", () => {
         ? readFileSync(pendingFile, "utf-8")
         : "";
       expect(remaining).toBe("");
-    });
-
-    test("re-injects context when files change", () => {
-      // First session-start to establish baseline
-      runHook(ctx, "session-start");
-
-      // Modify a state file
-      const todayFile = join(ctx.stateDir, "today.md");
-      writeFileSync(todayFile, "# Today\n\n## Now\n\nModified content for testing.\n");
-
-      // Give filesystem a moment
-      execSync("sleep 0.1");
-
-      // prompt-submit should detect change and re-inject
-      const output = runHook(ctx, "prompt-submit");
-      expect(output).toContain("Modified content for testing");
     });
   });
 });

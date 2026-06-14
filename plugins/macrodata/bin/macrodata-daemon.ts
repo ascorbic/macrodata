@@ -488,10 +488,16 @@ class MacrodataLocalDaemon {
 
       log(`File ${event}: ${path}`);
 
-      // State files (working memory) - inject full content
+      // State files (working memory) - inject content, capped so a mid-session
+      // delta can't blow the context budget (mirrors the session-start cap).
       if (path.startsWith(stateDir)) {
         try {
-          const content = readFileSync(path, "utf-8");
+          const raw = readFileSync(path, "utf-8");
+          const cap = 4000;
+          const content =
+            raw.length > cap
+              ? `${raw.slice(0, cap)}\n[…truncated: ${cap} of ${raw.length} chars. This file is over budget — compact it.]`
+              : raw;
           const filename = basename(path);
           writePendingContext(`<macrodata-update type="state" file="${filename}">\n${content}\n</macrodata-update>`);
         } catch {}

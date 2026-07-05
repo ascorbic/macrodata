@@ -3,8 +3,8 @@
  *
  * Tests semantic search indexing with isolated temp directories
  *
- * NOTE: These tests require the @xenova/transformers embeddings to work,
- * which depends on sharp being properly built. If sharp isn't available,
+ * NOTE: These tests require the @huggingface/transformers embeddings to work,
+ * which no longer require a sharp postinstall build step.
  * these tests will be skipped.
  */
 
@@ -21,8 +21,8 @@ import { join } from "path";
 // Check if embeddings are available by trying to load the pipeline
 let embeddingsAvailable = false;
 try {
-  // Quick check - just see if transformers loads without sharp errors
-  await import("@xenova/transformers");
+  // Quick check - just see if transformers loads
+  await import("@huggingface/transformers");
   embeddingsAvailable = true;
 } catch {
   console.warn("[Test] Embeddings not available - skipping indexer tests");

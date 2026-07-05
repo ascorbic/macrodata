@@ -5,10 +5,10 @@
  * No API calls, runs entirely locally
  *
  * Uses dynamic import to avoid slow startup from loading the large
- * @xenova/transformers library at module load time.
+ * @huggingface/transformers library at module load time.
  */
 
-import type { FeatureExtractionPipeline } from "@xenova/transformers";
+import type { FeatureExtractionPipeline } from "@huggingface/transformers";
 
 // Singleton pipeline instance (expensive to create)
 let embeddingPipeline: FeatureExtractionPipeline | null = null;
@@ -32,10 +32,10 @@ async function getEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
   }
 
   pipelineLoading = (async () => {
-    const { pipeline } = await import("@xenova/transformers");
+    const { pipeline } = await import("@huggingface/transformers");
     return pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
       // Use quantized model for faster loading
-      quantized: true,
+      dtype: "q8",
     });
   })();
 

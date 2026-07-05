@@ -12,7 +12,7 @@
 import { LocalIndex } from "vectra";
 import { join, basename } from "path";
 import { readFileSync, readdirSync, existsSync, mkdirSync } from "fs";
-import { embed, embedBatch, preloadModel as preloadEmbeddings } from "./embeddings.js";
+import { embed, embedBatch, embedQuery, preloadModel as preloadEmbeddings } from "./embeddings.js";
 import { getIndexDir, getEntitiesDir, getJournalDir } from "./config.js";
 
 // Item types for filtering
@@ -143,7 +143,7 @@ export async function searchMemory(
     return [];
   }
 
-  const queryVector = await embed(query);
+  const queryVector = await embedQuery(query);
   const results = await idx.queryItems(queryVector, limit * 2);
 
   // Filter results if type or since specified

@@ -16,59 +16,12 @@ import { join, basename } from "path";
 import { homedir } from "os";
 import { Database } from "bun:sqlite";
 import { LocalIndex } from "vectra";
-import { pipeline, type FeatureExtractionPipeline } from "@xenova/transformers";
+import { embedBatch, embedQuery } from "../src/embeddings.js";
 import { getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
 
-const OPENCODE_DB_PATH = join(homedir(), ".local", "share", "opencode", "opencode.db");
-const EMBEDDING_DIMENSIONS = 384;
-
-// Reuse embedding pipeline from search.ts
-let embeddingPipeline: FeatureExtractionPipeline | null = null;
-let pipelineLoading: Promise<FeatureExtractionPipeline> | null = null;
-
-async function getEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
-  if (embeddingPipeline) return embeddingPipeline;
-  if (pipelineLoading) return pipelineLoading;
-
-  pipelineLoading = pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
-    quantized: true,
-  });
-
-  try {
-    embeddingPipeline = await pipelineLoading;
-    return embeddingPipeline;
-  } finally {
-    pipelineLoading = null;
-  }
-}
-
-async function embedBatch(texts: string[]): Promise<number[][]> {
-  if (texts.length === 0) return [];
-
-  const pipe = await getEmbeddingPipeline();
-  const batchSize = 32;
-  const results: number[][] = [];
-
-  for (let i = 0; i < texts.length; i += batchSize) {
-    const batch = texts.slice(i, i + batchSize);
-    const outputs = await pipe(batch, { pooling: "mean", normalize: true });
-
-    for (let j = 0; j < batch.length; j++) {
-      const start = j * EMBEDDING_DIMENSIONS;
-      const end = start + EMBEDDING_DIMENSIONS;
-      results.push(Array.from((outputs.data as Float32Array).slice(start, end)));
-    }
-  }
-
-  return results;
-}
-
-async function embed(text: string): Promise<number[]> {
-  const pipe = await getEmbeddingPipeline();
-  const output = await pipe(text, { pooling: "mean", normalize: true });
-  return Array.from(output.data as Float32Array);
-}
+const OPENCODE_DB_PATH =
+  process.env.MACRODATA_OPENCODE_DB_PATH || join(homedir(), ".local", "share", "opencode", "opencode.db");
 
 // Conversation index singleton
 let convIndex: LocalIndex | null = null;
@@ -294,25 +247,35 @@ async function doRebuildConversationIndex(): Promise<{ exchangeCount: number }> 
     }
     await idx.createIndex();
 
-    for (let i = 0; i < exchanges.length; i++) {
-      const ex = exchanges[i];
-      await idx.upsertItem({
-        id: ex.id,
-        vector: vectors[i],
-        metadata: {
-          userPrompt: ex.userPrompt,
-          assistantSummary: ex.assistantSummary,
-          project: ex.project,
-          projectPath: ex.projectPath,
-          timestamp: ex.timestamp,
-          sessionId: ex.sessionId,
-          messageId: ex.messageId,
-        },
-      });
+    // Batch inside a single update transaction: without it, vectra rewrites
+    // the entire index.json on every upsert, which is O(n^2) and takes hours
+    // for tens of thousands of items.
+    await idx.beginUpdate();
+    try {
+      for (let i = 0; i < exchanges.length; i++) {
+        const ex = exchanges[i];
+        await idx.upsertItem({
+          id: ex.id,
+          vector: vectors[i],
+          metadata: {
+            userPrompt: ex.userPrompt,
+            assistantSummary: ex.assistantSummary,
+            project: ex.project,
+            projectPath: ex.projectPath,
+            timestamp: ex.timestamp,
+            sessionId: ex.sessionId,
+            messageId: ex.messageId,
+          },
+        });
 
-      if (i > 0 && i % 500 === 0) {
-        logger.log(`  ...inserted ${i}/${exchanges.length}`);
+        if (i > 0 && i % 500 === 0) {
+          logger.log(`  ...inserted ${i}/${exchanges.length}`);
+        }
       }
+      await idx.endUpdate();
+    } catch (err) {
+      idx.cancelUpdate();
+      throw err;
     }
 
     const duration = Date.now() - startTime;
@@ -363,7 +326,7 @@ export async function searchConversations(
     return [];
   }
 
-  const queryVector = await embed(query);
+  const queryVector = await embedQuery(query);
   const results = await idx.queryItems(queryVector, limit * 3);
 
   const searchResults: ConversationSearchResult[] = results.map((r) => {
@@ -454,21 +417,29 @@ export async function updateConversationIndex(): Promise<{ newCount: number; tot
     logger.log(`Generating embeddings for ${texts.length} new exchanges...`);
     const vectors = await embedBatch(texts);
 
-    for (let i = 0; i < newExchanges.length; i++) {
-      const ex = newExchanges[i];
-      await idx.upsertItem({
-        id: ex.id,
-        vector: vectors[i],
-        metadata: {
-          userPrompt: ex.userPrompt,
-          assistantSummary: ex.assistantSummary,
-          project: ex.project,
-          projectPath: ex.projectPath,
-          timestamp: ex.timestamp,
-          sessionId: ex.sessionId,
-          messageId: ex.messageId,
-        },
-      });
+    // Single update transaction: one index.json write for the whole batch
+    await idx.beginUpdate();
+    try {
+      for (let i = 0; i < newExchanges.length; i++) {
+        const ex = newExchanges[i];
+        await idx.upsertItem({
+          id: ex.id,
+          vector: vectors[i],
+          metadata: {
+            userPrompt: ex.userPrompt,
+            assistantSummary: ex.assistantSummary,
+            project: ex.project,
+            projectPath: ex.projectPath,
+            timestamp: ex.timestamp,
+            sessionId: ex.sessionId,
+            messageId: ex.messageId,
+          },
+        });
+      }
+      await idx.endUpdate();
+    } catch (err) {
+      idx.cancelUpdate();
+      throw err;
     }
 
     const duration = Date.now() - startTime;

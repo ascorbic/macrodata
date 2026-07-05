@@ -1,66 +1,16 @@
 /**
  * Semantic search for OpenCode plugin
  *
- * Uses Vectra + Transformers.js for local vector search
+ * Uses Vectra for vector search, with embeddings from src/embeddings.ts
+ * (local Transformers.js by default, remote provider when configured).
  */
 
 import { LocalIndex } from "vectra";
-import { pipeline, type FeatureExtractionPipeline } from "@xenova/transformers";
 import { existsSync, readFileSync, readdirSync, mkdirSync } from "fs";
 import { join } from "path";
+import { embed, embedBatch, embedQuery } from "../src/embeddings.js";
 import { getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
-
-// Embedding pipeline singleton
-let embeddingPipeline: FeatureExtractionPipeline | null = null;
-let pipelineLoading: Promise<FeatureExtractionPipeline> | null = null;
-
-const EMBEDDING_DIMENSIONS = 384;
-
-async function getEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
-  if (embeddingPipeline) return embeddingPipeline;
-
-  if (pipelineLoading) return pipelineLoading;
-
-  pipelineLoading = pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
-    quantized: true,
-  });
-
-  try {
-    embeddingPipeline = await pipelineLoading;
-    logger.log("Model loaded successfully");
-    return embeddingPipeline;
-  } finally {
-    pipelineLoading = null;
-  }
-}
-
-async function embed(text: string): Promise<number[]> {
-  const pipe = await getEmbeddingPipeline();
-  const output = await pipe(text, { pooling: "mean", normalize: true });
-  return Array.from(output.data as Float32Array);
-}
-
-async function embedBatch(texts: string[]): Promise<number[][]> {
-  if (texts.length === 0) return [];
-
-  const pipe = await getEmbeddingPipeline();
-  const batchSize = 32;
-  const results: number[][] = [];
-
-  for (let i = 0; i < texts.length; i += batchSize) {
-    const batch = texts.slice(i, i + batchSize);
-    const outputs = await pipe(batch, { pooling: "mean", normalize: true });
-
-    for (let j = 0; j < batch.length; j++) {
-      const start = j * EMBEDDING_DIMENSIONS;
-      const end = start + EMBEDDING_DIMENSIONS;
-      results.push(Array.from((outputs.data as Float32Array).slice(start, end)));
-    }
-  }
-
-  return results;
-}
 
 // Memory index singleton
 let memoryIndex: LocalIndex | null = null;
@@ -117,7 +67,7 @@ export async function searchMemory(
     return [];
   }
 
-  const queryVector = await embed(query);
+  const queryVector = await embedQuery(query);
   const results = await idx.queryItems(queryVector, limit * 2);
 
   let filtered = results;
@@ -268,23 +218,30 @@ export async function rebuildMemoryIndex(): Promise<{ itemCount: number }> {
   logger.log(`Generating embeddings for ${allItems.length} items...`);
   const vectors = await embedBatch(allItems.map((i) => i.content));
 
-  // Index all items
+  // Index all items in a single update transaction (one index.json write)
   const idx = await getMemoryIndex();
-  for (let i = 0; i < allItems.length; i++) {
-    const item = allItems[i];
-    const metadata: Record<string, string | number | boolean> = {
-      type: item.type,
-      content: item.content,
-      source: item.source,
-    };
-    if (item.section) metadata.section = item.section;
-    if (item.timestamp) metadata.timestamp = item.timestamp;
+  await idx.beginUpdate();
+  try {
+    for (let i = 0; i < allItems.length; i++) {
+      const item = allItems[i];
+      const metadata: Record<string, string | number | boolean> = {
+        type: item.type,
+        content: item.content,
+        source: item.source,
+      };
+      if (item.section) metadata.section = item.section;
+      if (item.timestamp) metadata.timestamp = item.timestamp;
 
-    await idx.upsertItem({
-      id: item.id,
-      vector: vectors[i],
-      metadata,
-    });
+      await idx.upsertItem({
+        id: item.id,
+        vector: vectors[i],
+        metadata,
+      });
+    }
+    await idx.endUpdate();
+  } catch (err) {
+    idx.cancelUpdate();
+    throw err;
   }
 
   const duration = Date.now() - startTime;

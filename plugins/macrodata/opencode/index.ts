@@ -3,7 +3,7 @@
  *
  * Provides persistent local memory for OpenCode agents:
  * - Session-stable context injection via system prompt transform
- * - Daemon deltas injected as user message parts
+ * - Daemon deltas and state changes injected as user message parts
  * - Compaction hook to preserve memory context
  * - Custom `macrodata` tool for memory operations
  */
@@ -14,7 +14,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { spawn } from "child_process";
 import { memoryTools } from "./tools.js";
-import { formatContextForPrompt, getSessionContext, buildContextPart, consumePendingContext, initializeStateRoot, getStateRoot } from "./context.js";
+import { formatContextForPrompt, getSessionContext, getContextUpdate, buildContextPart, consumePendingContext, initializeStateRoot, getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
 
 
@@ -151,16 +151,28 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
       }
     },
 
-    // Deliver daemon deltas as a part of the incoming user message — appended
-    // to the transcript tail, so the cached prefix is untouched
-    "chat.message": async (_input, output) => {
+    // Deliver daemon deltas and state changes as a part of the incoming user
+    // message — appended to the transcript tail, so the cached prefix is
+    // untouched
+    "chat.message": async (input, output) => {
       try {
+        const updates: string[] = [];
+
         const pendingContext = consumePendingContext();
         if (pendingContext) {
-          output.parts.push(buildContextPart(pendingContext, output.message));
+          updates.push(pendingContext);
+        }
+
+        const contextUpdate = await getContextUpdate(input.sessionID);
+        if (contextUpdate) {
+          updates.push(contextUpdate);
+        }
+
+        if (updates.length > 0) {
+          output.parts.push(buildContextPart(updates.join("\n\n"), output.message));
         }
       } catch (err) {
-        logger.error(`Pending context injection error: ${String(err)}`);
+        logger.error(`Context update injection error: ${String(err)}`);
       }
     },
 

@@ -142,37 +142,31 @@ interface FormatOptions {
   client?: { config: { providers: () => Promise<{ data?: { providers?: Array<{ id: string; models?: Record<string, unknown> }> } }> } };
 }
 
+type ContextSections = Map<string, string>;
+
+function renderSection(name: string, content: string): string {
+  const attrs = name === "files" ? ` root="${getStateRoot()}"` : "";
+  return `<macrodata-${name}${attrs}>\n${content}\n</macrodata-${name}>`;
+}
+
+function renderContext(sections: ContextSections): string {
+  const rendered = Array.from(sections, ([name, content]) => renderSection(name, content));
+  return `<macrodata>\n${rendered.join("\n\n")}\n</macrodata>`;
+}
+
 /**
- * Format memory context for injection into conversation
+ * Build the memory context as named sections. Returns null on first run
+ * (before onboarding has created the identity file).
  */
-export async function formatContextForPrompt(
+async function buildContextSections(
   options: FormatOptions = {}
-): Promise<string | null> {
+): Promise<ContextSections | null> {
   const { forCompaction = false, client } = options;
   const stateRoot = getStateRoot();
   const identityPath = join(stateRoot, "state", "identity.md");
-  const isFirstRun = !existsSync(identityPath);
 
-  // First run - return minimal context with onboarding pointer and detected user info
-  if (isFirstRun) {
-    if (forCompaction) return null;
-    
-    // Detect user info to avoid multiple permission prompts during onboarding
-    const userInfo = detectUser();
-    
-    return `[MACRODATA]
-
-## Status: First Run
-
-Memory is not yet configured. Load the \`macrodata-onboarding\` skill to set up.
-
-## Detected User Info
-
-\`\`\`json
-${JSON.stringify(userInfo, null, 2)}
-\`\`\`
-
-Use this pre-detected info during onboarding instead of running detection scripts.`;
+  if (!existsSync(identityPath)) {
+    return null;
   }
 
   const identity = readFileOrEmpty(identityPath);
@@ -199,20 +193,20 @@ Use this pre-detected info during onboarding instead of running detection script
           .join("\n")
       : "_No active schedules_";
 
-  const sections = [
-    `<macrodata-identity>\n${identity || "_Not configured_"}\n</macrodata-identity>`,
-    `<macrodata-today>\n${today || "_Empty_"}\n</macrodata-today>`,
-    `<macrodata-human>\n${human || "_Empty_"}\n</macrodata-human>`,
-  ];
+  const sections: ContextSections = new Map([
+    ["identity", identity || "_Not configured_"],
+    ["today", today || "_Empty_"],
+    ["human", human || "_Empty_"],
+  ]);
 
   if (workspace) {
-    sections.push(`<macrodata-workspace>\n${workspace}\n</macrodata-workspace>`);
+    sections.set("workspace", workspace);
   }
 
-  sections.push(`<macrodata-journal>\n${journalFormatted || "_No entries_"}\n</macrodata-journal>`);
+  sections.set("journal", journalFormatted || "_No entries_");
 
   if (!forCompaction) {
-    sections.push(`<macrodata-schedules>\n${schedulesFormatted}\n</macrodata-schedules>`);
+    sections.set("schedules", schedulesFormatted);
 
     // List state files
     const stateDir = join(stateRoot, "state");
@@ -247,12 +241,10 @@ Use this pre-detected info during onboarding instead of running detection script
     const usage = existsSync(usagePath) ? readFileSync(usagePath, "utf-8").trim() : "";
 
     if (usage) {
-      sections.push(`<macrodata-usage>\n${usage}\n</macrodata-usage>`);
+      sections.set("usage", usage);
     }
 
-    sections.push(
-      `<macrodata-files root="${stateRoot}">\n${filesFormatted}\n</macrodata-files>`
-    );
+    sections.set("files", filesFormatted);
 
     // Fetch available models for scheduling tools
     if (client) {
@@ -295,7 +287,7 @@ Use this pre-detected info during onboarding instead of running detection script
           
           const models = Array.from(byFamily.values()).map(m => m.fullId).sort();
           if (models.length > 0) {
-            sections.push(`<macrodata-models>\nAvailable models for scheduling: ${models.join(", ")}\n</macrodata-models>`);
+            sections.set("models", `Available models for scheduling: ${models.join(", ")}`);
           }
         }
       } catch {
@@ -304,10 +296,49 @@ Use this pre-detected info during onboarding instead of running detection script
     }
   }
 
-  return `<macrodata>\n${sections.join("\n\n")}\n</macrodata>`;
+  return sections;
 }
 
-const sessionContextCache = new Map<string, string | null>();
+function firstRunContext(): string {
+  // Detect user info to avoid multiple permission prompts during onboarding
+  const userInfo = detectUser();
+
+  return `[MACRODATA]
+
+## Status: First Run
+
+Memory is not yet configured. Load the \`macrodata-onboarding\` skill to set up.
+
+## Detected User Info
+
+\`\`\`json
+${JSON.stringify(userInfo, null, 2)}
+\`\`\`
+
+Use this pre-detected info during onboarding instead of running detection scripts.`;
+}
+
+/**
+ * Format memory context for injection into conversation
+ */
+export async function formatContextForPrompt(
+  options: FormatOptions = {}
+): Promise<string | null> {
+  const sections = await buildContextSections(options);
+
+  if (!sections) {
+    return options.forCompaction ? null : firstRunContext();
+  }
+
+  return renderContext(sections);
+}
+
+interface SessionSnapshot {
+  context: string | null;
+  sections: ContextSections | null;
+}
+
+const sessionContextCache = new Map<string, SessionSnapshot>();
 
 /**
  * Get memory context for the system prompt, frozen per session.
@@ -325,18 +356,54 @@ export async function getSessionContext(
     return formatContextForPrompt(options);
   }
 
-  if (sessionContextCache.has(sessionID)) {
-    return sessionContextCache.get(sessionID) ?? null;
+  const cached = sessionContextCache.get(sessionID);
+  if (cached) {
+    return cached.context;
   }
 
-  const context = await formatContextForPrompt(options);
-  sessionContextCache.set(sessionID, context);
+  const sections = await buildContextSections(options);
+  const context = sections ? renderContext(sections) : firstRunContext();
+  sessionContextCache.set(sessionID, { context, sections });
   return context;
+}
+
+/**
+ * Get the memory context sections that changed since the session's frozen
+ * snapshot, rendered for injection as a message part, and advance the
+ * baseline so each change is delivered once. Returns null when there is no
+ * baseline yet or nothing changed.
+ *
+ * The models section is excluded: it needs a client fetch, only exists in
+ * snapshots, and never changes mid-session.
+ */
+export async function getContextUpdate(sessionID: string): Promise<string | null> {
+  const snapshot = sessionContextCache.get(sessionID);
+  if (!snapshot) return null;
+
+  const current = await buildContextSections();
+  if (!current) return null;
+
+  const names = new Set([...(snapshot.sections?.keys() ?? []), ...current.keys()]);
+  names.delete("models");
+
+  const changed: string[] = [];
+  for (const name of names) {
+    const content = current.get(name);
+    if (content === snapshot.sections?.get(name)) continue;
+    changed.push(renderSection(name, content ?? "_Removed_"));
+  }
+
+  if (changed.length === 0) return null;
+
+  snapshot.sections = current;
+  return `<macrodata-update>\nThese memory context sections changed during this session and supersede the versions shown earlier:\n\n${changed.join("\n\n")}\n</macrodata-update>`;
 }
 
 /**
  * Wrap volatile context in a synthetic text part attached to a user message.
  * At most one part is built per message, so the message-derived ID is unique.
+ * The text is framed as a system reminder so the model reads it as harness
+ * context rather than something the user typed.
  */
 export function buildContextPart(
   text: string,
@@ -348,6 +415,6 @@ export function buildContextPart(
     sessionID: message.sessionID,
     type: "text",
     synthetic: true,
-    text,
+    text: `<system-reminder>\n${text}\n</system-reminder>`,
   };
 }

@@ -7,17 +7,19 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { writeFileSync } from "fs";
+import { writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import {
   createTestContext,
   setupMinimalState,
   addJournalEntry,
+  addReminder,
   type TestContext,
 } from "./helpers.js";
 import {
   formatContextForPrompt,
   getSessionContext,
+  getContextUpdate,
   buildContextPart,
 } from "../opencode/context.js";
 
@@ -83,6 +85,93 @@ describe("getSessionContext", () => {
   });
 });
 
+describe("getContextUpdate", () => {
+  test("returns null for a session with no frozen baseline", async () => {
+    addJournalEntry(ctx, "test", "an entry");
+
+    expect(await getContextUpdate("session-no-baseline")).toBeNull();
+  });
+
+  test("returns null when nothing changed since the baseline", async () => {
+    await getSessionContext("session-unchanged");
+
+    expect(await getContextUpdate("session-unchanged")).toBeNull();
+  });
+
+  test("returns only the changed sections, then null until the next change", async () => {
+    await getSessionContext("session-delta");
+
+    writeFileSync(join(ctx.stateDir, "today.md"), "# Today\n\nA fresh plan.\n");
+    const update = await getContextUpdate("session-delta");
+
+    expect(update).toContain("<macrodata-update>");
+    expect(update).toContain("<macrodata-today>");
+    expect(update).toContain("A fresh plan.");
+    expect(update).not.toContain("<macrodata-identity>");
+
+    expect(await getContextUpdate("session-delta")).toBeNull();
+
+    addReminder(ctx, "check-ci", {
+      type: "cron",
+      expression: "0 9 * * *",
+      description: "Check CI status",
+      payload: "check ci",
+    });
+    const second = await getContextUpdate("session-delta");
+
+    expect(second).toContain("<macrodata-schedules>");
+    expect(second).toContain("Check CI status");
+    expect(second).not.toContain("<macrodata-today>");
+  });
+
+  test("surfaces new journal entries", async () => {
+    await getSessionContext("session-journal");
+
+    addJournalEntry(ctx, "test", "logged after the snapshot");
+    const update = await getContextUpdate("session-journal");
+
+    expect(update).toContain("<macrodata-journal>");
+    expect(update).toContain("logged after the snapshot");
+  });
+
+  test("ignores the models section, which is only computed at snapshot time", async () => {
+    const client = {
+      config: {
+        providers: async () => ({
+          data: {
+            providers: [
+              {
+                id: "anthropic",
+                models: {
+                  "claude-fable-5": { capabilities: { toolcall: true } },
+                },
+              },
+            ],
+          },
+        }),
+      },
+    };
+    const snapshot = await getSessionContext("session-models", { client });
+
+    expect(snapshot).toContain("<macrodata-models>");
+    expect(await getContextUpdate("session-models")).toBeNull();
+  });
+
+  test("delivers the full context once onboarding completes mid-session", async () => {
+    for (const f of ["identity.md", "today.md", "human.md", "workspace.md"]) {
+      rmSync(join(ctx.stateDir, f), { force: true });
+    }
+    const firstRun = await getSessionContext("session-onboarding");
+    expect(firstRun).toContain("First Run");
+
+    setupMinimalState(ctx);
+    const update = await getContextUpdate("session-onboarding");
+
+    expect(update).toContain("<macrodata-identity>");
+    expect(update).toContain("<macrodata-today>");
+  });
+});
+
 describe("buildContextPart", () => {
   test("builds a synthetic text part bound to the user message", () => {
     const part = buildContextPart("<macrodata-update>delta</macrodata-update>", {
@@ -96,7 +185,7 @@ describe("buildContextPart", () => {
       sessionID: "ses_456",
       type: "text",
       synthetic: true,
-      text: "<macrodata-update>delta</macrodata-update>",
+      text: "<system-reminder>\n<macrodata-update>delta</macrodata-update>\n</system-reminder>",
     });
   });
 });

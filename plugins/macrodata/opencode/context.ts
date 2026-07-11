@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, unlinkSync } from "fs";
 
 import { join } from "path";
+import type { TextPart } from "@opencode-ai/sdk";
 import { getStateRoot, getJournalDir, getRemindersDir } from "../src/config.js";
 import { detectUser } from "../src/detect-user.js";
 
@@ -184,7 +185,7 @@ Use this pre-detected info during onboarding instead of running detection script
   const journalFormatted = journalEntries
     .map((e) => {
       const ts = new Date(e.timestamp);
-      const date = isNaN(ts.getTime()) ? "unknown" : ts.toLocaleDateString();
+      const date = isNaN(ts.getTime()) ? "unknown" : ts.toISOString().split("T")[0];
       return `- [${e.topic}] ${e.content.split("\n")[0]} (${date})`;
     })
     .join("\n");
@@ -304,4 +305,49 @@ Use this pre-detected info during onboarding instead of running detection script
   }
 
   return `<macrodata>\n${sections.join("\n\n")}\n</macrodata>`;
+}
+
+const sessionContextCache = new Map<string, string | null>();
+
+/**
+ * Get memory context for the system prompt, frozen per session.
+ *
+ * The system prompt sits at the start of the provider's cached prefix, so a
+ * single changed byte re-ingests the whole conversation at cache-write prices.
+ * State changes mid-session (journal writes, schedule edits) must reach the
+ * conversation as message parts, never by mutating this snapshot.
+ */
+export async function getSessionContext(
+  sessionID: string | undefined,
+  options: FormatOptions = {}
+): Promise<string | null> {
+  if (!sessionID) {
+    return formatContextForPrompt(options);
+  }
+
+  if (sessionContextCache.has(sessionID)) {
+    return sessionContextCache.get(sessionID) ?? null;
+  }
+
+  const context = await formatContextForPrompt(options);
+  sessionContextCache.set(sessionID, context);
+  return context;
+}
+
+/**
+ * Wrap volatile context in a synthetic text part attached to a user message.
+ * At most one part is built per message, so the message-derived ID is unique.
+ */
+export function buildContextPart(
+  text: string,
+  message: { id: string; sessionID: string }
+): TextPart {
+  return {
+    id: `${message.id}-macrodata`,
+    messageID: message.id,
+    sessionID: message.sessionID,
+    type: "text",
+    synthetic: true,
+    text,
+  };
 }

@@ -2,7 +2,8 @@
  * OpenCode Macrodata Plugin
  *
  * Provides persistent local memory for OpenCode agents:
- * - Context injection via system prompt transform
+ * - Session-stable context injection via system prompt transform
+ * - Daemon deltas injected as user message parts
  * - Compaction hook to preserve memory context
  * - Custom `macrodata` tool for memory operations
  */
@@ -13,7 +14,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { spawn } from "child_process";
 import { memoryTools } from "./tools.js";
-import { formatContextForPrompt, consumePendingContext, initializeStateRoot, getStateRoot } from "./context.js";
+import { formatContextForPrompt, getSessionContext, buildContextPart, consumePendingContext, initializeStateRoot, getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
 
 
@@ -137,20 +138,29 @@ export const MacrodataPlugin: Plugin = async (ctx: PluginInput) => {
   installSkills();
 
   return {
-    // Inject memory context into system prompt
-    "experimental.chat.system.transform": async (_input, output) => {
+    // Inject memory context into the system prompt, frozen per session so the
+    // provider's prompt cache stays valid across turns
+    "experimental.chat.system.transform": async (input, output) => {
       try {
-        const pendingContext = consumePendingContext();
-        if (pendingContext) {
-          output.system.push(pendingContext);
-        }
-
-        const memoryContext = await formatContextForPrompt({ client: ctx.client });
+        const memoryContext = await getSessionContext(input.sessionID, { client: ctx.client });
         if (memoryContext) {
           output.system.push(memoryContext);
         }
       } catch (err) {
         logger.error(`System context injection error: ${String(err)}`);
+      }
+    },
+
+    // Deliver daemon deltas as a part of the incoming user message — appended
+    // to the transcript tail, so the cached prefix is untouched
+    "chat.message": async (_input, output) => {
+      try {
+        const pendingContext = consumePendingContext();
+        if (pendingContext) {
+          output.parts.push(buildContextPart(pendingContext, output.message));
+        }
+      } catch (err) {
+        logger.error(`Pending context injection error: ${String(err)}`);
       }
     },
 

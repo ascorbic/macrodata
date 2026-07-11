@@ -9,5 +9,5 @@
     "noEmit": true,
     "types": ["bun-types"]
   },
-  "include": ["src/**/*", "bin/**/*", "opencode/**/*"]
+  "include": ["src/**/*", "bin/**/*", "opencode/**/*", "test/**/*"]
 }

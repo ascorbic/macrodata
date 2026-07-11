@@ -37,8 +37,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.1.0",
-    "@opencode-ai/plugin": "^1.0.162",
-    "@opencode-ai/sdk": "^1.1.49",
+    "@opencode-ai/plugin": "^1.17.18",
+    "@opencode-ai/sdk": "^1.17.18",
     "@xenova/transformers": "^2.17.2",
     "chokidar": "^4.0.3",
     "croner": "^9.0.0",
@@ -56,6 +56,7 @@
     "type": "plugin",
     "hooks": [
       "chat.message",
+      "experimental.chat.system.transform",
       "experimental.session.compacting"
     ]
   },

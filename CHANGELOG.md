@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- [#30](https://github.com/jasikpark/macrodata/pull/30) [`d54da2b`](https://github.com/jasikpark/macrodata/commit/d54da2bbf466e0d40b088ff6d7a6c77934c76b0f) Thanks [@jasikpark](https://github.com/jasikpark)! - Add the `five-whys` skill: structured root-cause analysis that forces behavioral resolutions into verifiable artifacts. Instead of stopping at "I'll remember to X," it drives each bedrock cause to a concrete diff — a `state/identity.md` rule, a scheduled job, a hook change, or a journal/entity edit. Invoke when a pattern keeps recurring, behavior has drifted, or a fix is about to become a resolution to "try harder." Adapted from the five-whys skill in [open-strix](https://github.com/tkellogg/open-strix) (Tim Kellogg, MIT); methodology unchanged, storage and action surfaces rewritten for macrodata's own tools.
+
+### Patch Changes
+
+- [#28](https://github.com/jasikpark/macrodata/pull/28) [`166ef83`](https://github.com/jasikpark/macrodata/commit/166ef83fae331b9483209defaff02d14e33f717d) Thanks [@jasikpark](https://github.com/jasikpark)! - Log malformed lines in journal and conversation parsing instead of silently skipping them. The journal indexer (`parseJournalForIndexing`) and the conversation parser (`parseConversationFile`, `expandConversation`) now count unparseable lines and `console.warn`, so corrupted or multi-line entries that drop out of search are diagnosable instead of vanishing silently. Unreadable journal files warn too.
+
+- [#31](https://github.com/jasikpark/macrodata/pull/31) [`3afd9ed`](https://github.com/jasikpark/macrodata/commit/3afd9ed8ccd540af53c27258c2eef7ddc6111405) Thanks [@jasikpark](https://github.com/jasikpark)! - Rebalance the `schedule` tool's `delivery` description so `session` and `headless` read as two first-class, intent-based choices (session = a human should see/act on it; headless = it should just run on its own), rather than framing `headless` as a "reserve for trusted background jobs" last resort. Keeps the honest caveats — headless runs unsupervised and no-ops while the machine is asleep (e.g. a laptop on battery) — but as constraints to design around, not reasons to avoid it.
+
 ## 0.5.1
 
 ### Patch Changes

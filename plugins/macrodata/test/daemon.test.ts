@@ -4,8 +4,9 @@
  * Tests the background daemon process that handles scheduling and file watching.
  * NOTE: These tests start real daemon processes in isolated temp directories.
  *
- * IMPORTANT: The daemon imports the indexer which requires @xenova/transformers
- * and sharp. If sharp is not built, these tests will be skipped.
+ * The daemon lazy-loads the indexer (@huggingface/transformers); no sharp
+ * postinstall build is involved anymore, so there is no skip guard — a
+ * failure to load the library is a real failure.
  */
 
 import { describe, test, expect, beforeEach, afterEach, afterAll } from "bun:test";
@@ -19,16 +20,10 @@ import {
   type TestContext,
 } from "./helpers";
 
-// Check if daemon can start (requires sharp to be built)
-let daemonAvailable = false;
-try {
-  await import("@xenova/transformers");
-  daemonAvailable = true;
-} catch {
-  console.warn("[Test] Daemon tests skipped - sharp not built");
-}
-
-// Track all started daemons for cleanup
+// Track all spawned daemon processes for cleanup, including ones whose PID
+// file never appeared — otherwise a startup slower than the poll window leaks
+// a detached daemon that outlives the test run.
+const spawnedProcs: ReturnType<typeof spawn>[] = [];
 const startedDaemons: { pid: number; ctx: TestContext }[] = [];
 
 // Get paths
@@ -37,12 +32,17 @@ const DAEMON_SCRIPT = join(dirname(import.meta.dir), "bin", "macrodata-daemon.ts
 async function startDaemon(ctx: TestContext): Promise<number | null> {
   return new Promise((resolve) => {
     const proc = spawn("bun", ["run", DAEMON_SCRIPT], {
-      env: { ...process.env, MACRODATA_ROOT: ctx.root },
+      env: {
+        ...process.env,
+        MACRODATA_ROOT: ctx.root,
+        MACRODATA_OPENCODE_DB_PATH: join(ctx.root, "nonexistent-opencode.db"),
+      },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
 
     proc.unref();
+    spawnedProcs.push(proc);
 
     // Wait for PID file to appear
     const pidFile = join(ctx.root, ".daemon.pid");
@@ -56,6 +56,13 @@ async function startDaemon(ctx: TestContext): Promise<number | null> {
         resolve(pid);
       } else if (attempts > 20) {
         clearInterval(checkPid);
+        if (proc.pid) {
+          try {
+            process.kill(proc.pid, "SIGKILL");
+          } catch {
+            // Already dead
+          }
+        }
         resolve(null);
       }
     }, 100);
@@ -84,9 +91,18 @@ afterAll(() => {
   for (const { pid } of startedDaemons) {
     stopDaemon(pid);
   }
+  for (const proc of spawnedProcs) {
+    if (proc.pid && !proc.killed) {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {
+        // Already dead
+      }
+    }
+  }
 });
 
-describe.skipIf(!daemonAvailable)("daemon", () => {
+describe("daemon", () => {
   let ctx: TestContext;
 
   beforeEach(() => {

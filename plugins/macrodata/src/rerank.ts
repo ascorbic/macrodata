@@ -31,11 +31,11 @@ async function loadCrossEncoder(): Promise<void> {
 
   loading = (async () => {
     const { AutoTokenizer, AutoModelForSequenceClassification } = await import(
-      "@xenova/transformers"
+      "@huggingface/transformers"
     );
     const [tokenizer, model] = await Promise.all([
       AutoTokenizer.from_pretrained(MODEL_ID),
-      AutoModelForSequenceClassification.from_pretrained(MODEL_ID, { quantized: true }),
+      AutoModelForSequenceClassification.from_pretrained(MODEL_ID, { dtype: "q8" }),
     ]);
     crossEncoderTokenizer = tokenizer as unknown as AnyTokenizer;
     crossEncoderModel = model as unknown as AnyModel;

@@ -18,11 +18,26 @@ import { spawn } from "child_process";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
 import { join, basename } from "path";
 import { Cron } from "croner";
-import { indexEntityFile, preloadModel } from "../src/indexer.js";
 import { getStateRoot, getEntitiesDir, getJournalDir, getIndexDir, getRemindersDir } from "../src/config.js";
 import { formatReminder, reminderFileName, buildHeadlessArgs, resolveModel, cronTooFrequent } from "../src/reminders.js";
-import { updateConversationIndex as updateOpenCodeConversations } from "../opencode/conversations.js";
-import { updateConversationIndex as updateClaudeCodeConversations } from "../src/conversations.js";
+
+// The indexing modules pull in @huggingface/transformers + vectra (multi-second
+// import). Load them lazily so the daemon writes its PID file and starts
+// scheduling immediately instead of blocking on heavy imports.
+async function loadIndexer() {
+  return import("../src/indexer.js");
+}
+
+async function loadConversationIndexers() {
+  const [oc, cc] = await Promise.all([
+    import("../opencode/conversations.js"),
+    import("../src/conversations.js"),
+  ]);
+  return {
+    updateOpenCodeConversations: oc.updateConversationIndex,
+    updateClaudeCodeConversations: cc.updateConversationIndex,
+  };
+}
 
 // Daemon-specific path helpers
 // Use MACRODATA_ROOT for all daemon files (PID, log) to support testing with isolated directories
@@ -177,6 +192,8 @@ function ensureDirectories() {
 }
 
 async function updateAllConversationIndexes() {
+  const { updateClaudeCodeConversations, updateOpenCodeConversations } = await loadConversationIndexers();
+
   // Update Claude Code conversations
   try {
     const claude = await updateClaudeCodeConversations();
@@ -280,7 +297,8 @@ class MacrodataLocalDaemon {
     process.on("SIGHUP", () => this.reload());
 
     // Preload embedding model and update conversation indexes in background
-    preloadModel()
+    loadIndexer()
+      .then((indexer) => indexer.preloadModel())
       .then(() => {
         log("Embedding model preloaded");
         // After model is loaded, incrementally update both conversation indexes
@@ -546,9 +564,10 @@ class MacrodataLocalDaemon {
     this.reindexQueue.clear();
 
     log(`Reindexing ${paths.length} file(s)`);
+    const indexer = await loadIndexer();
     for (const path of paths) {
       try {
-        await indexEntityFile(path);
+        await indexer.indexEntityFile(path);
         log(`  ✓ ${basename(path)}`);
       } catch (err) {
         log(`  ✗ ${basename(path)}: ${String(err)}`);

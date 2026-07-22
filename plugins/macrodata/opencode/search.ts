@@ -5,7 +5,7 @@
  */
 
 import { LocalIndex } from "vectra";
-import { pipeline, type FeatureExtractionPipeline } from "@xenova/transformers";
+import type { FeatureExtractionPipeline } from "@huggingface/transformers";
 import { existsSync, readFileSync, readdirSync, mkdirSync } from "fs";
 import { join } from "path";
 import { getStateRoot } from "./context.js";
@@ -22,9 +22,12 @@ async function getEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
 
   if (pipelineLoading) return pipelineLoading;
 
-  pipelineLoading = pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
-    quantized: true,
-  });
+  pipelineLoading = (async () => {
+    const { pipeline } = await import("@huggingface/transformers");
+    return pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+      dtype: "q8",
+    });
+  })();
 
   try {
     embeddingPipeline = await pipelineLoading;

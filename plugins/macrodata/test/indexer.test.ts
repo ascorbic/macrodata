@@ -3,9 +3,9 @@
  *
  * Tests semantic search indexing with isolated temp directories
  *
- * NOTE: These tests require the @xenova/transformers embeddings to work,
- * which depends on sharp being properly built. If sharp isn't available,
- * these tests will be skipped.
+ * These tests exercise the real @huggingface/transformers embedding pipeline
+ * (no sharp postinstall build step needed anymore, so no skip guard either —
+ * a failure to load the library is a real failure).
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -18,20 +18,9 @@ import {
 } from "./helpers";
 import { join } from "path";
 
-// Check if embeddings are available by trying to load the pipeline
-let embeddingsAvailable = false;
-try {
-  // Quick check - just see if transformers loads without sharp errors
-  await import("@xenova/transformers");
-  embeddingsAvailable = true;
-} catch {
-  console.warn("[Test] Embeddings not available - skipping indexer tests");
-}
+const indexer = await import("../src/indexer");
 
-// Only import indexer if embeddings work
-const indexer = embeddingsAvailable ? await import("../src/indexer") : null;
-
-describe.skipIf(!embeddingsAvailable)("indexer", () => {
+describe("indexer", () => {
   let ctx: TestContext;
 
   beforeEach(() => {
@@ -53,9 +42,9 @@ describe.skipIf(!embeddingsAvailable)("indexer", () => {
           content: "This is a test journal entry about integration testing",
         };
 
-        await indexer!.indexJournalEntry(entry);
+        await indexer.indexJournalEntry(entry);
 
-        const stats = await indexer!.getIndexStats();
+        const stats = await indexer.getIndexStats();
         expect(stats.itemCount).toBe(1);
       },
       { timeout: 30000 }
@@ -68,10 +57,10 @@ describe.skipIf(!embeddingsAvailable)("indexer", () => {
         content: "Made a delicious pasta carbonara with fresh eggs",
       };
 
-      await indexer!.indexJournalEntry(entry);
+      await indexer.indexJournalEntry(entry);
 
       // Search for related content
-      const results = await indexer!.searchMemory("italian food pasta", { limit: 5 });
+      const results = await indexer.searchMemory("italian food pasta", { limit: 5 });
       expect(results.length).toBeGreaterThan(0);
       expect(results[0].content).toContain("carbonara");
     });
@@ -84,7 +73,7 @@ describe.skipIf(!embeddingsAvailable)("indexer", () => {
       addJournalEntry(ctx, "topic2", "Second journal entry about React");
       addJournalEntry(ctx, "topic3", "Third journal entry about testing");
 
-      const result = await indexer!.rebuildIndex();
+      const result = await indexer.rebuildIndex();
       expect(result.itemCount).toBeGreaterThanOrEqual(3);
     });
 
@@ -122,7 +111,7 @@ In progress.
 `
       );
 
-      const result = await indexer!.rebuildIndex();
+      const result = await indexer.rebuildIndex();
       // Should have entity sections (2+ per file due to section splitting)
       expect(result.itemCount).toBeGreaterThanOrEqual(4);
     });
@@ -144,9 +133,9 @@ Loves systems programming and performance optimization.
 `
       );
 
-      await indexer!.rebuildIndex();
+      await indexer.rebuildIndex();
 
-      const results = await indexer!.searchMemory("systems programming rust", {
+      const results = await indexer.searchMemory("systems programming rust", {
         limit: 5,
       });
       expect(results.length).toBeGreaterThan(0);
@@ -159,14 +148,14 @@ Loves systems programming and performance optimization.
       addJournalEntry(ctx, "work", "Fixed a bug in the authentication system");
       addEntityFile(ctx, "projects", "auth", "# Auth\n\n## Description\n\nAuthentication service.");
 
-      await indexer!.rebuildIndex();
+      await indexer.rebuildIndex();
 
-      const journalOnly = await indexer!.searchMemory("authentication", {
+      const journalOnly = await indexer.searchMemory("authentication", {
         type: "journal",
         limit: 5,
       });
 
-      const projectOnly = await indexer!.searchMemory("authentication", {
+      const projectOnly = await indexer.searchMemory("authentication", {
         type: "projects",
         limit: 5,
       });
@@ -187,8 +176,8 @@ Loves systems programming and performance optimization.
         "raft",
         "# Raft\n\n## Summary\n\nRaft is a consensus algorithm for managing a replicated log."
       );
-      await indexer!.rebuildIndex();
-      const results = await indexer!.searchMemory("consensus algorithm replicated log", {
+      await indexer.rebuildIndex();
+      const results = await indexer.searchMemory("consensus algorithm replicated log", {
         limit: 5,
       });
       // The whole point of the fix: a non-people/projects category is indexed,
@@ -203,9 +192,9 @@ Loves systems programming and performance optimization.
       addJournalEntry(ctx, "old", "Old entry from last year", oldDate);
       addJournalEntry(ctx, "new", "New entry from this year", newDate);
 
-      await indexer!.rebuildIndex();
+      await indexer.rebuildIndex();
 
-      const results = await indexer!.searchMemory("entry", {
+      const results = await indexer.searchMemory("entry", {
         since: "2025-01-01",
         limit: 10,
       });
@@ -219,7 +208,7 @@ Loves systems programming and performance optimization.
     });
 
     test("returns empty array for empty index", async () => {
-      const results = await indexer!.searchMemory("anything", { limit: 5 });
+      const results = await indexer.searchMemory("anything", { limit: 5 });
       expect(results).toEqual([]);
     });
   });
@@ -254,7 +243,7 @@ Loves systems programming and performance optimization.
         "kernel-no-language",
         "The kernel manages hardware resources and provides system call interfaces to user space",
       );
-      await indexer!.rebuildIndex();
+      await indexer.rebuildIndex();
     }
 
     test(
@@ -262,7 +251,7 @@ Loves systems programming and performance optimization.
       async () => {
         await seedAdversarialIndex();
 
-        const reranked = await indexer!.searchMemory(
+        const reranked = await indexer.searchMemory(
           "What language is the Linux kernel written in?",
           { limit: 3, rerank: true },
         );
@@ -289,7 +278,7 @@ Loves systems programming and performance optimization.
       async () => {
         await seedAdversarialIndex();
 
-        const vectorOnly = await indexer!.searchMemory(
+        const vectorOnly = await indexer.searchMemory(
           "What language is the Linux kernel written in?",
           { limit: 3 },
         );
@@ -308,7 +297,7 @@ Loves systems programming and performance optimization.
       async () => {
         await seedAdversarialIndex();
 
-        const reranked = await indexer!.searchMemory(
+        const reranked = await indexer.searchMemory(
           "What language is the Linux kernel written in?",
           { limit: 3, rerank: true },
         );
@@ -338,12 +327,12 @@ Kubernetes, Docker, CI/CD pipelines.
 `
       );
 
-      await indexer!.indexEntityFile(filePath);
+      await indexer.indexEntityFile(filePath);
 
-      const stats = await indexer!.getIndexStats();
+      const stats = await indexer.getIndexStats();
       expect(stats.itemCount).toBeGreaterThan(0);
 
-      const results = await indexer!.searchMemory("kubernetes docker", { limit: 5 });
+      const results = await indexer.searchMemory("kubernetes docker", { limit: 5 });
       expect(results.length).toBeGreaterThan(0);
     });
   });

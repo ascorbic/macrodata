@@ -16,11 +16,12 @@ import { join, basename } from "path";
 import { homedir } from "os";
 import { Database } from "bun:sqlite";
 import { LocalIndex } from "vectra";
-import { pipeline, type FeatureExtractionPipeline } from "@xenova/transformers";
+import type { FeatureExtractionPipeline } from "@huggingface/transformers";
 import { getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
 
-const OPENCODE_DB_PATH = join(homedir(), ".local", "share", "opencode", "opencode.db");
+const OPENCODE_DB_PATH =
+  process.env.MACRODATA_OPENCODE_DB_PATH || join(homedir(), ".local", "share", "opencode", "opencode.db");
 const EMBEDDING_DIMENSIONS = 384;
 
 // Reuse embedding pipeline from search.ts
@@ -31,9 +32,12 @@ async function getEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
   if (embeddingPipeline) return embeddingPipeline;
   if (pipelineLoading) return pipelineLoading;
 
-  pipelineLoading = pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
-    quantized: true,
-  });
+  pipelineLoading = (async () => {
+    const { pipeline } = await import("@huggingface/transformers");
+    return pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+      dtype: "q8",
+    });
+  })();
 
   try {
     embeddingPipeline = await pipelineLoading;

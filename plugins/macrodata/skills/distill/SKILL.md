@@ -21,15 +21,26 @@ find ~/.claude/projects -name "*.jsonl" -mtime -1 -type f 2>/dev/null
 
 ### 2. Process Each Conversation
 
-For **each** conversation file, spawn a sub-agent with the Task tool:
+**First, extract clean conversation text.** Run the bundled `jq` filter to convert each
+raw transcript to human + assistant text only. It keeps just the text blocks — dropping
+tool calls, tool results, thinking blocks, and harness plumbing (slash-command echoes,
+`<usage>` telemetry) — and shrinks a transcript ~44x. Write the output to a temp dir,
+not the cwd:
+
+```bash
+scratch="$(mktemp -d)"
+for conversation in $CONVERSATIONS; do
+  jq -rn -f "${CLAUDE_PLUGIN_ROOT}/bin/transcript-text.jq" "$conversation" \
+    > "$scratch/$(basename "$conversation" .jsonl).txt"
+done
+```
+
+Then for **each** extracted text file, spawn a sub-agent with the Task tool:
 
 ```
 Task(subagent_type="general-purpose", prompt=`
-Read the conversation at {path}.
-
-Filter to actual conversation content:
-- Include: human messages, assistant text responses
-- Exclude: tool calls, tool results, system messages, thinking blocks
+Read the conversation transcript at {clean_text_path}. It is already filtered to
+human + assistant messages only — no tool calls, tool results, or thinking blocks.
 
 Extract and return as JSON:
 {
@@ -112,6 +123,9 @@ log_journal(topic="distill-summary", content="Processed N conversations. Extract
 ## Notes
 
 - Sub-agents should be spawned in parallel for efficiency
-- If a conversation file is very large (>500KB), the sub-agent may need to sample rather than read fully
+- Clean up the temp dir once all sub-agents finish: `rm -rf "$scratch"`
+- Extraction shrinks a transcript ~44x, so the clean text is almost always readable in
+  full; only a genuinely enormous session (a multi-MB extract) needs sampling
+- Requires `jq` (install with `brew install jq` if missing)
 - Empty results are fine - not every conversation has extractable knowledge
 - Facts should be concise and specific, not narrative summaries

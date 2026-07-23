@@ -1,0 +1,9 @@
+# Runtime artifacts from the ambient-recall spike
+.index/
+.recall-calibration.jsonl
+.recall-injected-*.json
+node_modules/
+.recall-inbox-*.json
+.recall-request-*.json
+.access-events.jsonl
+.recall-exclude-*.json

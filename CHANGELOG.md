@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0
+
+### Minor Changes
+
+- [#32](https://github.com/jasikpark/macrodata/pull/32) [`c7d4767`](https://github.com/jasikpark/macrodata/commit/c7d4767318406262cbc524f84c56ce42b90b230b) Thanks [@jasikpark](https://github.com/jasikpark)! - Ambient memory recall (beta, opt-in): on UserPromptSubmit / PostToolUse / Stop, a hook asks a local retrieval pipeline for memories relevant to the current context and injects hits on the next opportunity via a file-mailbox protocol. Dual-leg retrieval (Vectra vector + FTS) with RRF fusion, last-accessed recency bias, and Qwen3 cross-encoder rerank — running fully in-process on Metal via node-llama-cpp 3.19.1 (one background worker, no llama-server processes). Off by default: lives under `spike/ambient-recall-nlc/` and runs only where the hooks are wired via `.claude/settings.local.json`. `MACRODATA_RECALL_MODE` picks async (default — models live only in the worker) vs sync (inline, debug-only). Soak + a backtest harness gate the reification into the installed plugin.
+
+### Patch Changes
+
+- [#35](https://github.com/jasikpark/macrodata/pull/35) [`a7475ec`](https://github.com/jasikpark/macrodata/commit/a7475ec597c00fc18af467f607c8cbb18acd1ed7) Thanks [@jasikpark](https://github.com/jasikpark)! - Give `/distill` a canonical transcript-extraction step instead of asking each sub-agent to "filter to conversation content" on its own. A new bundled filter, `bin/transcript-text.jq`, deterministically converts a raw Claude Code transcript to human + assistant text only — dropping tool calls, tool results, thinking blocks, and harness plumbing (slash-command echoes, `<usage>` telemetry) — and shrinks a transcript ~44x (18MB → ~420KB on a real session). The distill coordinator now pre-extracts each transcript to a `mktemp -d` temp dir and points sub-agents at the clean text. This kills the failure mode where every scheduled run hand-rolled a throwaway JSONL parser and littered the memory root with scratch files.
+
+- [#33](https://github.com/jasikpark/macrodata/pull/33) [`ee1119b`](https://github.com/jasikpark/macrodata/commit/ee1119b77de7754c103d27b3bb9d9022eddf2afb) Thanks [@jasikpark](https://github.com/jasikpark)! - Migrate from `@xenova/transformers` to `@huggingface/transformers` (replicates ascorbic/macrodata#35). Modern sharp (0.34) ships prebuilt binaries with no postinstall script, so bun's blocked-lifecycle-script behavior can no longer break the native binary install — including in consumers that install the plugin through a generated wrapper package (Claude Code / OpenCode plugin cache), where `trustedDependencies` from this repo does not apply. Same model, same 384-dim embeddings; existing indexes stay valid. The daemon also lazy-loads the indexing modules so its PID file appears in a few hundred ms instead of several seconds.
+
 ## 0.6.0
 
 ### Minor Changes

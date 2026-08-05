@@ -21,19 +21,28 @@ find ~/.claude/projects -name "*.jsonl" -mtime -1 -type f 2>/dev/null
 
 ### 2. Process Each Conversation
 
-**First, extract clean conversation text.** Run the bundled `jq` filter to convert each
-raw transcript to human + assistant text only. It keeps just the text blocks — dropping
-tool calls, tool results, thinking blocks, and harness plumbing (slash-command echoes,
-`<usage>` telemetry) — and shrinks a transcript ~44x. Write the output to a temp dir,
-not the cwd:
+**First, extract clean conversation text.** Convert each raw transcript to human +
+assistant text only. The filter keeps just the text blocks — dropping tool calls, tool
+results, thinking blocks, and harness plumbing (slash-command echoes, `<usage>`
+telemetry) — and shrinks a transcript ~44x.
+
+Unattended runs have nobody to answer permission prompts, so these are refused
+outright — do not attempt them: `jq -f`, `mktemp`/`mkdir`, compound commands
+(`&&`, `;`, loops), `rm`. What works is a single-command redirect into an existing
+directory. Run **one** command per transcript, filter program inline, writing a
+flat file into the gitignored `.scratch/` directory at the memory root:
 
 ```bash
-scratch="$(mktemp -d)"
-for conversation in $CONVERSATIONS; do
-  jq -rn -f "${CLAUDE_PLUGIN_ROOT}/bin/transcript-text.jq" "$conversation" \
-    > "$scratch/$(basename "$conversation" .jsonl).txt"
-done
+jq -r 'def strip_noise: gsub("<usage>.*?</usage>\\n?"; ""); select(.type == "user" or .type == "assistant") | .type as $role | ( if (.message.content | type) == "string" then [ .message.content ] else [ .message.content[] | select(.type == "text") | .text ] end ) | map(select(. != null) | select(startswith("<command-name>") | not) | select(startswith("<command-message>") | not) | select(startswith("<command-args>") | not) | select(startswith("<local-command-caveat>") | not) | strip_noise) | map(select((. | gsub("\\s"; "")) != "")) as $texts | ($texts | join("\n")) as $body | select($body != "") | "\n### \($role)\n\($body)"' CONVERSATION.jsonl > .scratch/distill-BASENAME.txt
 ```
+
+The filter program above is its own single source of truth — there is no separate
+filter file to load. If `.scratch/` does not exist, create it with the Write tool
+(write `.scratch/.keep`), never `mkdir`.
+
+Name extracts by the transcript's basename (the session UUID) exactly as shown — no
+timestamps or run ids. UUID names make re-extracts idempotent overwrites, so
+`.scratch/` stays bounded at one file per session instead of accumulating copies.
 
 Then for **each** extracted text file, spawn a sub-agent with the Task tool:
 
@@ -123,7 +132,9 @@ log_journal(topic="distill-summary", content="Processed N conversations. Extract
 ## Notes
 
 - Sub-agents should be spawned in parallel for efficiency
-- Clean up the temp dir once all sub-agents finish: `rm -rf "$scratch"`
+- Leave the `.scratch/` extracts in place — unattended runs cannot `rm`, and the
+  directory is gitignored, so leftovers are inert; interactive maintenance sessions
+  may tidy it
 - Extraction shrinks a transcript ~44x, so the clean text is almost always readable in
   full; only a genuinely enormous session (a multi-MB extract) needs sampling
 - Requires `jq` (install with `brew install jq` if missing)

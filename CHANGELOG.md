@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2
+
+### Patch Changes
+
+- [#39](https://github.com/jasikpark/macrodata/pull/39) [`80b208b`](https://github.com/jasikpark/macrodata/commit/80b208b81ff4efc4f6d5611d5bafb0bc21fb6c42) Thanks [@jasikpark](https://github.com/jasikpark)! - Install the plugin's dependencies on SessionStart instead of leaning on bun's auto-install. Marketplace installs copy the plugin into a per-version cache dir but never run an install, and Claude Code's dependency auto-install does not fire for `bun.lock` ([anthropics/claude-code#47634](https://github.com/anthropics/claude-code/issues/47634)), so the MCP server, the daemon, and every `bin/*.ts` script resolved their imports out of bun's global auto-install cache. That cache cannot host native modules: the sharp binary loads `@rpath/libvips-cpp.<ver>.dylib` relative to a sibling `node_modules` layout the versioned cache dir names do not provide, and phantom deps (`@huggingface/transformers` bare-imports `onnxruntime-common`) are simply absent. `search_memory` broke this way twice. The new `bin/ensure-deps.sh` hook installs into the persistent per-plugin data dir (`${CLAUDE_PLUGIN_DATA}`, which survives plugin updates and is removed on uninstall, per the [plugins reference](https://code.claude.com/docs/en/plugins-reference#persistent-data-directory)) and symlinks it in as the plugin root's `node_modules`, so every entry point resolves dependencies the ordinary way with no `NODE_PATH` plumbing. Two independent idempotent guards keep it cheap and self-healing: it reinstalls only when the shipped `package.json` or `bun.lock` differs from the copy stored alongside the install, and it re-points the symlink on every run, which is what heals the fresh version dir a plugin update leaves behind when dependencies did not change. A failed install removes the stored manifests so the next session retries rather than treating the failure as up to date, the happy path prints nothing (SessionStart stdout is injected into the model's context), and an unset `CLAUDE_PLUGIN_DATA` (opencode, older clients) exits silently and changes nothing. A real `node_modules` directory in the plugin root, such as a dev checkout's own install, is never touched.
+
 ## 0.7.1
 
 ### Patch Changes

@@ -19,6 +19,14 @@
 				"hooks": [
 					{
 						"type": "command",
+						"command": "${CLAUDE_PLUGIN_ROOT}/bin/ensure-deps.sh"
+					}
+				]
+			},
+			{
+				"hooks": [
+					{
+						"type": "command",
 						"command": "${CLAUDE_PLUGIN_ROOT}/bin/macrodata-hook.sh session-start"
 					}
 				]

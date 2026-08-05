@@ -17,7 +17,7 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
         working-directory: plugins/macrodata
 
       - name: Lint
@@ -27,3 +27,29 @@ jobs:
       - name: Test
         run: bun test
         working-directory: plugins/macrodata
+
+      # Marketplace installs ship no node_modules; ensure-deps.sh is what makes
+      # the plugin work there. Run it the way an installed plugin would: from a
+      # copy OUTSIDE the workspace, so the nested bun.lock (not the root
+      # workspace lock) is what resolves — this fails when that lockfile drifts
+      # stale, and proves the --production install covers every runtime import.
+      - name: Simulate installed plugin (ensure-deps.sh)
+        run: |
+          root="$(mktemp -d)" data="$(mktemp -d)"
+          cp plugins/macrodata/package.json plugins/macrodata/bun.lock "$root/"
+          mkdir -p "$root/bin"
+          cp plugins/macrodata/bin/ensure-deps.sh "$root/bin/"
+          CLAUDE_PLUGIN_ROOT="$root" CLAUDE_PLUGIN_DATA="$data" "$root/bin/ensure-deps.sh"
+          test -L "$root/node_modules"
+          cd "$root" && bun -e "
+            // Import every declared runtime dep so the list cannot drift from
+            // package.json. Packages without a root export need an explicit
+            // entry here; a new one fails this job loudly rather than silently
+            // losing coverage.
+            const ENTRYPOINTS = { '@modelcontextprotocol/sdk': '@modelcontextprotocol/sdk/server/mcp.js' };
+            const pkg = await Bun.file('package.json').json();
+            for (const dep of Object.keys(pkg.dependencies ?? {})) {
+              await import(ENTRYPOINTS[dep] ?? dep);
+              console.error('import ok:', dep);
+            }
+          "

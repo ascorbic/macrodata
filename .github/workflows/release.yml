@@ -24,10 +24,10 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Install root dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Install plugin dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
         working-directory: plugins/macrodata
 
       - name: Lint
@@ -44,7 +44,7 @@ jobs:
         with:
           version: bun run version
           publish: bunx changeset tag
-          commit: "ci: release"
-          title: "ci: release"
+          commit: 'ci: release'
+          title: 'ci: release'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

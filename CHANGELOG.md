@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3
+
+### Patch Changes
+
+- [#44](https://github.com/jasikpark/macrodata/pull/44) [`62bc6c9`](https://github.com/jasikpark/macrodata/commit/62bc6c953c072127b327cd609334ad888bc105d4) Thanks [@jasikpark](https://github.com/jasikpark)! - Prune vectors whose source items no longer exist, and add `reindex.ts --prune-only` to run that reconcile without re-embedding. The ambient index only ever upserted, so a vector outlived the journal line, section, or file it came from and kept scoring against live material forever — nothing deleted, so the index drifted upward indefinitely. Measured before the fix: 2783 vectors against 2762 real items, and every one of the 21 orphans was a section of a single deleted entity file that kept surfacing at 0.99. That file is the ghost behind a recall misdiagnosis where a superseded entity outranked the correction written to replace it.
+
+  Reconciling is cheap in a way rebuilding is not — scanning is file reads, while embedding is the entire cost of a rebuild — so `--prune-only` finishes in about 4 seconds where a full rebuild takes about 13 minutes. An empty scan is refused rather than honored: an unreadable or misconfigured data root produces one far more often than a genuinely empty corpus does, and reconciling against it would delete every vector, recoverable only by re-embedding the whole corpus.
+
+- [#41](https://github.com/jasikpark/macrodata/pull/41) [`21f6fa8`](https://github.com/jasikpark/macrodata/commit/21f6fa87afc0ed75d15465e0e2f59d4015179b75) Thanks [@jasikpark](https://github.com/jasikpark)! - Ask each session which memory files earned their place, and give `/dreamtime` a step that acts on the answers. `save_conversation_summary` gains `unhelpfulFiles` and `helpfulFiles`, and the SessionEnd and PreCompact hook prompts request them. Nothing else in the system can produce this signal: relevance scores rank a superseded file and its own correction identically, so a stale entity keeps outranking the file that fixed it, every session, forever — only a session that actually used both can say which one did the work. `unhelpfulFiles` is asked first and demands paths, because self-assessment runs optimistic and "which files helped?" invites generous partial credit for anything that was merely on topic.
+
+  A new "Memory File ROI" step in `/dreamtime` reads those lines back out of the last ~20 `conversation-summary` entries and treats a path named unhelpful 3+ times as worth a look — correcting or merging in place, after reading the file against its live siblings, since the common cause is a superseded file competing with its own correction rather than a file that deserves removal. The step explicitly does not remove anything: the run is unattended, so a wrong call goes uncaught, and writing a file empty leaves an indexed husk that still outranks its replacement. Removal candidates get journaled with their evidence for an interactive session to act on.
+
 ## 0.7.2
 
 ### Patch Changes

@@ -227,22 +227,25 @@ async function main(): Promise<void> {
     // selection bias (Porrima placement), so the displayed score is the pure
     // cross-encoder relevance — an old hit with a high score survived on merit,
     // which is the gentler behavior we want to see. Entities are evergreen.
+    // Age shown = effective last_accessed (surfacing bumps the clock — Porrima
+    // semantics), NOT the content-created date. Intentional; labeled "seen" below.
     const ageLabel = (ts?: string): string => {
       if (!ts) return "evergreen";
       const d = (Date.now() - Date.parse(ts)) / 86_400_000;
-      return Number.isNaN(d) ? "evergreen" : d < 1 ? "<1d" : `${Math.round(d)}d`;
+      return Number.isNaN(d) ? "evergreen" : d < 1 ? "<1d ago" : `${Math.round(d)}d ago`;
     };
     const halfLife = Number(process.env.MACRODATA_RECALL_HALFLIFE_DAYS ?? 30);
     // CLEAN block → model (additionalContext): final score + age only, no diagnostics.
     const block =
       "<macrodata-recall>\n" +
-      chunks.map((h) => `- (${h.score.toFixed(2)} · ${ageLabel(h.timestamp)}) ${srcLabel(h)}\n  ${h.content.replace(/\s+/g, " ").slice(0, 220)}`).join("\n") +
+      chunks.map((h) => `- (${h.score.toFixed(2)} · seen ${ageLabel(h.timestamp)}) ${srcLabel(h)}\n  ${h.content.replace(/\s+/g, " ").slice(0, 220)}`).join("\n") +
       "\n</macrodata-recall>";
     // DEBUG block → human (systemMessage): per-STAGE numbers so calibration isn't judged
     // on the conflated final. rerank = final cross-encoder; rrf = fused recall score
-    // (pre-rerank); rec = recency factor (0-1, pre-rerank candidate-selection only).
+    // (pre-rerank); rec = recency factor (0-1, pre-rerank selection only); "seen" =
+    // effective last_accessed age that rec decays from (surfacing bumps it — Porrima semantics).
     const debugBlock = chunks.map((h) =>
-      `- rerank ${h.score.toFixed(2)} · rrf ${(h.rrf ?? 0).toFixed(3)} · rec ${(h.recency ?? 1).toFixed(2)} · ${ageLabel(h.timestamp)} — ${srcLabel(h)}\n  ${h.content.replace(/\s+/g, " ").slice(0, 220)}`
+      `- rerank ${h.score.toFixed(2)} · rrf ${(h.rrf ?? 0).toFixed(3)} · rec (${(h.recency ?? 1).toFixed(2)} · seen ${ageLabel(h.timestamp)}) — ${srcLabel(h)}\n  ${h.content.replace(/\s+/g, " ").slice(0, 220)}`
     ).join("\n");
     // Sampled calibration prompt: on ~VERDICT_RATE of injections, ask the agent to
     // journal a usefulness verdict. Goes in additionalContext (model-facing) so the

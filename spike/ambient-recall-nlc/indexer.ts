@@ -179,8 +179,9 @@ function parseEntitiesForIndexing(subdir: string, type: MemoryItemType): MemoryI
   return items;
 }
 
-export async function rebuildIndex(): Promise<{ itemCount: number }> {
-  const start = Date.now();
+// The live corpus, as ids. Scanning is cheap (file reads, no embedding), which
+// is what lets pruneOrphans run standalone in seconds.
+function collectItems(): MemoryItem[] {
   const allItems: MemoryItem[] = [];
 
   allItems.push(...parseJournalForIndexing());
@@ -193,10 +194,45 @@ export async function rebuildIndex(): Promise<{ itemCount: number }> {
     }
   }
 
+  return allItems;
+}
+
+// indexItems only ever upserts, so a vector outlives the journal line, section,
+// or file it came from and keeps scoring against live material forever. Nothing
+// else deletes, so the index only converges on the corpus if the ids the scan
+// no longer produces are removed here.
+export async function pruneOrphans(scanned?: MemoryItem[]): Promise<{ pruned: number; kept: number }> {
+  const items = scanned ?? collectItems();
+  const idx = await getIndex();
+  const indexed = await idx.listItems();
+
+  // An empty scan means an unreadable or misconfigured data root far more often
+  // than a genuinely empty corpus, and pruning against it would delete every
+  // vector. Refuse rather than reconcile to zero.
+  if (items.length === 0) {
+    if (indexed.length > 0) console.log(`[spike] prune skipped: scan found 0 items, index holds ${indexed.length}`);
+    return { pruned: 0, kept: indexed.length };
+  }
+
+  const live = new Set(items.map((it) => it.id));
+  const orphans = indexed.filter((it) => !live.has(it.id));
+  for (const orphan of orphans) await idx.deleteItem(orphan.id);
+
+  return { pruned: orphans.length, kept: indexed.length - orphans.length };
+}
+
+export async function rebuildIndex(): Promise<{ itemCount: number; pruned: number }> {
+  const start = Date.now();
+  const allItems = collectItems();
+
   console.log(`[spike] embedding + indexing ${allItems.length} items (Qwen3/1024)…`);
   await indexItems(allItems);
+
+  const { pruned } = await pruneOrphans(allItems);
+  if (pruned > 0) console.log(`[spike] pruned ${pruned} orphaned vectors`);
+
   console.log(`[spike] rebuild complete in ${((Date.now() - start) / 1000).toFixed(1)}s`);
-  return { itemCount: allItems.length };
+  return { itemCount: allItems.length, pruned };
 }
 
 export async function searchMemory(

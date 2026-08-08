@@ -127,6 +127,8 @@ export const saveConversationSummaryTool = tool({
     keyDecisions: tool.schema.array(tool.schema.string()).optional().describe("Important decisions made"),
     openThreads: tool.schema.array(tool.schema.string()).optional().describe("Topics to follow up on"),
     learnedPatterns: tool.schema.array(tool.schema.string()).optional().describe("New patterns learned about the user"),
+    unhelpfulFiles: tool.schema.array(tool.schema.string()).optional().describe("Answer this one first, and name specific paths. Memory files loaded at session start or surfaced by recall that did not inform the work — including any that were wrong or superseded. Nothing else in the system can tell a stale file from a live one."),
+    helpfulFiles: tool.schema.array(tool.schema.string()).optional().describe("Memory files that measurably changed the work this session. Give paths."),
     notes: tool.schema.string().optional().describe("Freeform notes for anything that doesn't fit structured fields"),
   },
   async execute(args) {
@@ -139,6 +141,8 @@ export const saveConversationSummaryTool = tool({
       keyDecisions: args.keyDecisions,
       openThreads: args.openThreads,
       learnedPatterns: args.learnedPatterns,
+      unhelpfulFiles: args.unhelpfulFiles,
+      helpfulFiles: args.helpfulFiles,
       notes: args.notes,
     });
 

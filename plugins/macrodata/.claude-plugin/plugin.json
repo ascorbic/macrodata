@@ -112,7 +112,7 @@
 				"hooks": [
 					{
 						"type": "prompt",
-						"prompt": "This session is ending. If it wasn't compacted during this session, use save_conversation_summary to capture:\n- What was accomplished\n- Key decisions made\n- Any open threads that need follow-up\n\nBe concise. Skip this if a compaction summary was already saved.",
+						"prompt": "This session is ending. If it wasn't compacted during this session, use save_conversation_summary to capture:\n- What was accomplished\n- Key decisions made\n- Any open threads that need follow-up\n- Which memory files did NOT earn their place this session, then which ones did (`unhelpfulFiles` / `helpfulFiles`, paths not descriptions)\n\nBe concise. Skip this if a compaction summary was already saved.",
 						"timeout": 30
 					}
 				]
@@ -127,7 +127,7 @@
 					},
 					{
 						"type": "prompt",
-						"prompt": "Context is about to be compacted. Before this happens, save what's important.\n\nUse save_conversation_summary to capture:\n- What was accomplished in this session\n- Key decisions made\n- Any open threads that need follow-up\n- Patterns learned about the user\n\nBe concise but thorough. This summary will help recover context in future sessions.\n\nContext being compacted:\n$ARGUMENTS",
+						"prompt": "Context is about to be compacted. Before this happens, save what's important.\n\nUse save_conversation_summary to capture:\n- What was accomplished in this session\n- Key decisions made\n- Any open threads that need follow-up\n- Patterns learned about the user\n- Which memory files did NOT earn their place this session, then which ones did (`unhelpfulFiles` / `helpfulFiles`, paths not descriptions)\n\nBe concise but thorough. This summary will help recover context in future sessions.\n\nContext being compacted:\n$ARGUMENTS",
 						"timeout": 60
 					}
 				]

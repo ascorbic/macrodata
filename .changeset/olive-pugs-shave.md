@@ -1,0 +1,7 @@
+---
+"macrodata": patch
+---
+
+Ask each session which memory files earned their place, and give `/dreamtime` a step that acts on the answers. `save_conversation_summary` gains `unhelpfulFiles` and `helpfulFiles`, and the SessionEnd and PreCompact hook prompts request them. Nothing else in the system can produce this signal: relevance scores rank a superseded file and its own correction identically, so a stale entity keeps outranking the file that fixed it, every session, forever — only a session that actually used both can say which one did the work. `unhelpfulFiles` is asked first and demands paths, because self-assessment runs optimistic and "which files helped?" invites generous partial credit for anything that was merely on topic.
+
+A new "Memory File ROI" step in `/dreamtime` reads those lines back out of the last ~20 `conversation-summary` entries and treats a path named unhelpful 3+ times as worth a look — correcting or merging in place, after reading the file against its live siblings, since the common cause is a superseded file competing with its own correction rather than a file that deserves removal. The step explicitly does not remove anything: the run is unattended, so a wrong call goes uncaught, and writing a file empty leaves an indexed husk that still outranks its replacement. Removal candidates get journaled with their evidence for an interactive session to act on.

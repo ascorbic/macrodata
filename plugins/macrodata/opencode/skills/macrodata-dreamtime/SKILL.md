@@ -92,6 +92,22 @@ Reflect on memory system usage:
 
 Journal observations.
 
+### Memory File ROI
+
+Read the `Unhelpful files:` and `Helpful files:` lines from the last ~20
+`conversation-summary` journal entries. Only a session that used a file can
+judge it, so this is the only signal the store has about its own contents.
+
+A path named unhelpful 3+ times has earned a look. Read it against its live
+siblings first — the usual cause is a superseded file outranking its own
+correction on the same topic, which is a fix, not a removal, and relevance
+scores cannot tell those apart.
+
+Correct or merge in place. Do not remove a file here: this run is unattended, so
+a wrong call goes uncaught, and writing a file empty leaves an indexed husk that
+still outranks its replacement. Journal removal candidates with the evidence
+instead, and let an interactive session act on them.
+
 ## Output
 
 Update relevant files directly:

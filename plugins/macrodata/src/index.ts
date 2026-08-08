@@ -467,15 +467,27 @@ server.tool(
     keyDecisions: z.array(z.string()).optional().describe("Important decisions made"),
     openThreads: z.array(z.string()).optional().describe("Topics to follow up on"),
     learnedPatterns: z.array(z.string()).optional().describe("New patterns learned about the user"),
+    unhelpfulFiles: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Answer this one first, and name specific paths. Memory files loaded at session start or surfaced by recall that did not inform the work — including any that were wrong or superseded. Nothing else in the system can tell a stale file from a live one."
+      ),
+    helpfulFiles: z
+      .array(z.string())
+      .optional()
+      .describe("Memory files that measurably changed the work this session. Give paths."),
     notes: z.string().optional().describe("Freeform notes"),
   },
-  async ({ summary, keyDecisions, openThreads, learnedPatterns, notes }) => {
+  async ({ summary, keyDecisions, openThreads, learnedPatterns, unhelpfulFiles, helpfulFiles, notes }) => {
     ensureDirectories();
 
     const parts = [summary];
     if (keyDecisions?.length) parts.push(`Decisions: ${keyDecisions.join(", ")}`);
     if (openThreads?.length) parts.push(`Open threads: ${openThreads.join(", ")}`);
     if (learnedPatterns?.length) parts.push(`Learned: ${learnedPatterns.join(", ")}`);
+    if (unhelpfulFiles?.length) parts.push(`Unhelpful files: ${unhelpfulFiles.join(", ")}`);
+    if (helpfulFiles?.length) parts.push(`Helpful files: ${helpfulFiles.join(", ")}`);
     if (notes) parts.push(`Notes: ${notes}`);
 
     const entry: JournalEntry = {

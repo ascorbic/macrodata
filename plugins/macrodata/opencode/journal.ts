@@ -130,6 +130,8 @@ export async function saveConversationSummary(options: {
   keyDecisions?: string[];
   openThreads?: string[];
   learnedPatterns?: string[];
+  unhelpfulFiles?: string[];
+  helpfulFiles?: string[];
   notes?: string;
 }): Promise<void> {
   const parts = [options.summary];
@@ -142,6 +144,12 @@ export async function saveConversationSummary(options: {
   }
   if (options.learnedPatterns?.length) {
     parts.push(`Learned: ${options.learnedPatterns.join(", ")}`);
+  }
+  if (options.unhelpfulFiles?.length) {
+    parts.push(`Unhelpful files: ${options.unhelpfulFiles.join(", ")}`);
+  }
+  if (options.helpfulFiles?.length) {
+    parts.push(`Helpful files: ${options.helpfulFiles.join(", ")}`);
   }
   if (options.notes) {
     parts.push(`Notes: ${options.notes}`);

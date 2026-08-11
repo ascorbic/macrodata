@@ -34,6 +34,9 @@ export interface SearchResult {
   // Per-stage diagnostics (carried through for calibration; not used in ranking):
   rrf?: number; // RRF-fused recall score (vector+FTS), pre-recency, pre-rerank
   recency?: number; // recency decay factor (0-1) applied for candidate SELECTION only
+  wRank?: number; // 1-based rank in the pre-MMR w-sorted slate; wRank > pool size = MMR created this slot
+  mmrPick?: number; // 1-based MMR selection order; absent = MMR bypassed (small slate / lambda>=1)
+  mmrSim?: number; // redundancy penalty (max cosine/Jaccard vs earlier picks) at pick time; 0 for the first pick
 }
 
 let index: LocalIndex | null = null;
@@ -92,21 +95,6 @@ async function indexItems(items: MemoryItem[]): Promise<void> {
   }
 }
 
-// Topics excluded from the AMBIENT recall index: the recall system's own
-// telemetry (verdicts about recall). Indexing them lets recall surface its own
-// meta-log — the self-referential pollution we observed. They stay fully
-// reachable via the live MCP search_memory (the intentional, topic-scoped path);
-// this exclusion only affects the spike's ambient index. Env-overridable; the
-// `/calibration/` substring also catches future calibration-* topics.
-const RECALL_TOPIC_EXCLUDE = new Set(
-  (process.env.MACRODATA_RECALL_TOPIC_EXCLUDE ??
-    "ambient-memory-calibration,ambient-memory-qmd-calibration,ambient-memory-calibration-review")
-    .split(",").map((s) => s.trim()).filter(Boolean),
-);
-function isExcludedTopic(topic: string): boolean {
-  return RECALL_TOPIC_EXCLUDE.has(topic) || /calibration/i.test(topic);
-}
-
 function parseJournalForIndexing(): MemoryItem[] {
   const items: MemoryItem[] = [];
   const journalDir = getJournalDir();
@@ -118,7 +106,6 @@ function parseJournalForIndexing(): MemoryItem[] {
       for (let i = 0; i < lines.length; i++) {
         try {
           const entry = JSON.parse(lines[i]);
-          if (typeof entry.topic === "string" && isExcludedTopic(entry.topic)) continue; // telemetry: ambient-excluded
           items.push({
             id: `journal-${file}-${i}`,
             type: "journal",

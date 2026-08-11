@@ -16,6 +16,22 @@ import { searchMemory, resetIndexCache, type SearchResult } from "./indexer.ts";
 import { loadAccessOverlay, memKey } from "./access.ts";
 import { rankContext } from "./models.ts";
 
+// All env knobs parse through here: bare Number("") is 0 and Number("typo") is
+// NaN, and a NaN pool size makes mmrSelect return [] on every query — ambient
+// recall dying silently in the long-lived worker with nothing in the logs.
+// Out-of-range values keep the default and squeak per read (squeaky-gate: a
+// misconfiguration should announce itself until fixed, not degrade quietly).
+export function envNum(name: string, fallback: number, min: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < min) {
+    console.warn(`[fts] ${name}="${raw}" invalid (need a finite number >= ${min}); using ${fallback}`);
+    return fallback;
+  }
+  return n;
+}
+
 const STOP = new Set(
   "the a an is are was were be by of to in on for and or but with that this it as at from how do does did what why which when who whose into over under not no yes can could would should i we you they them their our your my me".split(" "),
 );
@@ -37,6 +53,13 @@ interface Doc {
 
 let corpus: Doc[] | null = null;
 let idf: Map<string, number> | null = null;
+// content -> embedding, for MMR's similarity leg. Built from the same
+// listItems() pass as the corpus (every candidate from EITHER leg lives in the
+// index, so this one map covers both — searchMemory discards vectors and the
+// FTS leg never had them). ~20MB at 2.4k items x 1024 dims — a second copy of
+// the vectors the cached LocalIndex already holds in memory, so ~40MB combined:
+// still trivial next to the loaded GGUFs in the long-lived worker.
+let contentVec: Map<string, number[]> | null = null;
 
 // Staleness gate for the long-lived worker: the FTS corpus is built FROM the
 // Vectra index, so one index.json mtime covers both caches. On change, drop
@@ -51,6 +74,7 @@ function checkIndexFresh(): void {
   if (stamp !== corpusStamp) {
     corpus = null;
     idf = null;
+    contentVec = null;
     resetIndexCache();
     corpusStamp = stamp;
   }
@@ -59,9 +83,13 @@ function checkIndexFresh(): void {
 async function buildCorpus(): Promise<void> {
   const idx = new LocalIndex(join(getIndexDir(), "vectors"));
   const items = await idx.listItems();
+  contentVec = new Map();
   corpus = items.map((it) => {
     const m = it.metadata as Record<string, unknown>;
     const content = (m.content as string) ?? "";
+    // Skip empty content: distinct empty items would collapse onto the "" key
+    // and hand each other's vectors out.
+    if (content && it.vector?.length) contentVec!.set(content, it.vector);
     const tf = new Map<string, number>();
     for (const t of terms(content)) tf.set(t, (tf.get(t) ?? 0) + 1);
     return { content, source: m.source as string, section: m.section as string | undefined, type: m.type as string, timestamp: m.timestamp as string | undefined, tf };
@@ -103,11 +131,133 @@ export async function rerank(query: string, docs: string[]): Promise<number[]> {
   return ctx.rankAll(query, docs.map((d) => d.slice(0, 2000)));
 }
 
+export interface PoolCandidate {
+  item: SearchResult;
+  rrf: number;
+  rec: number;
+  w: number;
+  vector?: number[];
+  // 1-based rank in the w-sorted slate, stamped by pipelineSearch BEFORE MMR
+  // runs: the counterfactual "plain top-k by score" position. wRank > pool
+  // size means MMR created this candidate's rerank slot (it displaced a
+  // higher-w near-duplicate); without it, pick order alone can't distinguish
+  // a penalized-but-strong candidate from a genuinely displaced-in one.
+  wRank?: number;
+  // Stamped by mmrSelect on the greedy path only: pick = 1-based selection
+  // order; maxSim = the redundancy penalty the candidate carried when picked
+  // (0 for the first pick). Absent = MMR was bypassed (small slate or
+  // lambda >= 1), which the diagnostics surface deliberately.
+  mmr?: { pick: number; maxSim: number };
+}
+
+// Similarity leg of MMR: cosine over the index embeddings (Porrima's metric,
+// same qwen3-embedding family — so its lambda values transfer at face value),
+// with Jaccard over terms() token sets as the degraded path when a vector is
+// missing (contentVec unbuilt after an FTS-leg failure). Cosine matters
+// because journal redundancy is often PARAPHRASE — same fact, different
+// words — which token overlap cannot see.
+function cosine(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom > 0 ? dot / denom : 0;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+// MMR pool selection (Porrima's passive-recall placement: mmrRerank at
+// lambda=0.55 BEFORE the cross-encoder — memory-storage.ts:927,
+// passive-memory-recall.ts:489): greedy diverse selection deciding which
+// candidates earn a rerank slot, so the expensive precision pass stops
+// spending slots on near-duplicates. Relevance = the recency-adjusted RRF
+// weight `w`, min-max normalized within the slate: raw RRF magnitudes (~1/60)
+// would let the (1-lambda) similarity term swamp relevance at any lambda,
+// making lambda a dead knob. (Min-max pins the slate's top to 1 and its last
+// to 0 — the weakest candidate competes on novelty alone, which is the
+// intent.) Input order doesn't matter; lambda >= 1 degenerates to plain top-k
+// (same short-circuit as Porrima).
+export function mmrSelect(slate: PoolCandidate[], k: number, lambda: number): PoolCandidate[] {
+  if (slate.length <= k) return slate.slice(0, k);
+  if (lambda >= 1) return [...slate].sort((a, b) => b.w - a.w).slice(0, k);
+  // NaN or negative lambda would corrupt or INVERT the scoring (a negative
+  // relevance weight rewards redundancy); clamp to pure-diversity instead.
+  if (!(lambda >= 0)) lambda = 0;
+  let wMax = -Infinity, wMin = Infinity;
+  for (const c of slate) {
+    if (c.w > wMax) wMax = c.w;
+    if (c.w < wMin) wMin = c.w;
+  }
+  const range = wMax - wMin;
+  const relevance = (c: PoolCandidate) => (range > 0 ? (c.w - wMin) / range : 1);
+  const tokens = new Map<PoolCandidate, Set<string>>(
+    slate.map((c) => [c, new Set(terms(c.item.content))]),
+  );
+  // Cosine only for a well-formed pair: a dim-mismatched or NaN-bearing vector
+  // (possible after an embedding-model change without an index wipe) must not
+  // yield sim 0 and read as maximally novel — degrade that pair to Jaccard.
+  const sim = (a: PoolCandidate, b: PoolCandidate): number => {
+    if (a.vector && b.vector && a.vector.length === b.vector.length) {
+      const c = cosine(a.vector, b.vector);
+      if (Number.isFinite(c)) return c;
+    }
+    return jaccard(tokens.get(a)!, tokens.get(b)!);
+  };
+
+  // Greedy selection: first pick is the highest-relevance candidate; each
+  // later pick maximizes lambda * relevance - (1 - lambda) * maxSim against
+  // the picks so far. maxSim clamps at 0 (Porrima does the same): negative
+  // cosine means "very diverse", which must not become a relevance bonus.
+  const selected: PoolCandidate[] = [];
+  const pickSim: number[] = [];
+  const remaining = [...slate];
+  while (selected.length < k && remaining.length > 0) {
+    if (selected.length === 0) {
+      let first = 0;
+      for (let i = 1; i < remaining.length; i++) if (remaining[i].w > remaining[first].w) first = i;
+      selected.push(remaining.splice(first, 1)[0]);
+      pickSim.push(0);
+      continue;
+    }
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    let bestMaxSim = 0;
+    for (let i = 0; i < remaining.length; i++) {
+      const c = remaining[i];
+      let maxSim = 0;
+      for (const s of selected) {
+        const v = sim(c, s);
+        if (v > maxSim) maxSim = v;
+      }
+      const score = lambda * relevance(c) - (1 - lambda) * maxSim;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+        bestMaxSim = maxSim;
+      }
+    }
+    selected.push(remaining.splice(bestIdx, 1)[0]);
+    pickSim.push(bestMaxSim);
+  }
+  // Copies, stamped after the loop: `sim` keys the Jaccard token map by object
+  // identity, so the originals must flow through selection untouched.
+  return selected.map((c, i) => ({ ...c, mmr: { pick: i + 1, maxSim: pickSim[i] } }));
+}
+
 // Full pipeline (Porrima placement): vector + FTS recall -> RRF fuse ->
-// recency-biased candidate SELECTION -> cross-encoder rerank -> floor on the
-// PURE rerank score. Recency decides which candidates earn a rerank slot; it
-// never touches the final ranking, so a stale-but-strongly-relevant memory that
-// survives into the pool still wins on pure relevance.
+// recency-biased + MMR-diversified candidate SELECTION -> cross-encoder
+// rerank -> floor on the PURE rerank score. Recency and diversity decide
+// which candidates earn a rerank slot; they never touch the final ranking, so
+// a stale-but-strongly-relevant memory that survives into the pool still wins
+// on pure relevance.
 export async function pipelineSearch(
   query: string,
   opts: { limit?: number; task?: string; floor?: number; rerankQuery?: string; exclude?: Set<string> } = {},
@@ -124,15 +274,22 @@ export async function pipelineSearch(
   // throw on a token-dense query exceeding contextSize). Isolate each leg so
   // one failing degrades to the other instead of killing the whole pipeline;
   // an unguarded ftsSearch throw would also discard a successful vector result.
+  // Leg width: Porrima's passive searchLimit tiers are 28/40/64
+  // (fast/balanced/thorough); 40 matches balanced. Widening is free at query
+  // time — vectra's queryItems scores every item and slices, and the FTS leg
+  // scans the full corpus regardless of the requested limit. Keep
+  // MACRODATA_RECALL_RERANK_POOL below the fused slate size (legK * 2) or the
+  // pool-selection stage goes vacuous and recency/MMR silently stop gating.
+  const legK = envNum("MACRODATA_RECALL_LEG_K", 40, 1);
   let vec: SearchResult[] = [];
   try {
-    vec = await searchMemory(query, { limit: 20, task });
+    vec = await searchMemory(query, { limit: legK, task });
   } catch (e) {
     console.warn(`[fts] vector leg failed, continuing FTS-only: ${String(e)}`);
   }
   let fts: SearchResult[] = [];
   try {
-    fts = await ftsSearch(query, 20);
+    fts = await ftsSearch(query, legK);
   } catch (e) {
     console.warn(`[fts] FTS leg failed, continuing vector-only: ${String(e)}`);
   }
@@ -171,7 +328,7 @@ export async function pipelineSearch(
   // created_at once and owns it. A dormant entity fades from ambient recall but
   // stays reachable via explicit search_memory. (Caveat: a move/copy can reset
   // birthtime, so it's a prior, not ground truth.)
-  const halfLifeDays = Number(process.env.MACRODATA_RECALL_HALFLIFE_DAYS ?? 30);
+  const halfLifeDays = envNum("MACRODATA_RECALL_HALFLIFE_DAYS", 30, 0.1);
   const now = Date.now();
   const entitiesDir = getEntitiesDir();
   const seedCache = new Map<string, string | undefined>();
@@ -209,11 +366,13 @@ export async function pipelineSearch(
   // recency a no-op (everyone gets reranked); tighten it to give recency bite.
   // Seed is precomputed once per candidate (not in the sort comparator) to avoid
   // redundant statSync calls.
-  const pool = Number(process.env.MACRODATA_RECALL_RERANK_POOL ?? 20);
-  const candidates = [...fused.values()]
-    .map((x) => { const rec = recency(lastAccessed(x.item)); return { item: x.item, rrf: x.rrf, rec, w: x.rrf * rec }; })
-    .sort((a, b) => b.w - a.w)
-    .slice(0, pool);
+  const pool = envNum("MACRODATA_RECALL_RERANK_POOL", 20, 1);
+  const lambda = envNum("MACRODATA_RECALL_MMR_LAMBDA", 0.55, 0);
+  const slate = [...fused.values()]
+    .map((x) => { const rec = recency(lastAccessed(x.item)); return { item: x.item, rrf: x.rrf, rec, w: x.rrf * rec, vector: contentVec?.get(x.item.content) } as PoolCandidate; })
+    .sort((a, b) => b.w - a.w);
+  slate.forEach((c, i) => { c.wRank = i + 1; });
+  const candidates = mmrSelect(slate, pool, lambda);
 
   // Rerank the pool; the PURE cross-encoder score is the final score. Carry the
   // per-stage diagnostics (rrf recall score, recency factor) through UNCHANGED so
@@ -221,7 +380,7 @@ export async function pipelineSearch(
   // final. Stamp effective last_accessed so the age label shows the real age.
   const scores = await rerank(rerankQuery || query, candidates.map((c) => c.item.content));
   return candidates
-    .map((c, i) => ({ ...c.item, score: scores[i], rrf: c.rrf, recency: c.rec, timestamp: lastAccessed(c.item) }))
+    .map((c, i) => ({ ...c.item, score: scores[i], rrf: c.rrf, recency: c.rec, wRank: c.wRank, mmrPick: c.mmr?.pick, mmrSim: c.mmr?.maxSim, timestamp: lastAccessed(c.item) }))
     .filter((c) => c.score >= floor)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);

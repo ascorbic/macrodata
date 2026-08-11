@@ -25,19 +25,19 @@
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
-import { pipelineSearch } from "./fts.ts";
+import { envNum, pipelineSearch } from "./fts.ts";
 import type { SearchResult } from "./indexer.ts";
 import { buildHookQuery, analyzeTranscript, scrubOperationalNoise } from "./query.ts";
 import { memKey, recordAccess } from "./access.ts";
 
-const FLOOR = Number(process.env.MACRODATA_RECALL_FLOOR ?? 0.5);
-const LIMIT = Number(process.env.MACRODATA_RECALL_LIMIT ?? 3);
+const FLOOR = envNum("MACRODATA_RECALL_FLOOR", 0.5, 0);
+const LIMIT = envNum("MACRODATA_RECALL_LIMIT", 3, 1);
 const MIN_QUERY_CHARS = 8;
 // Sampled calibration: fraction of recall INJECTIONS that also ask the agent to
 // journal a usefulness verdict. Rate-limited so it doesn't flood the turn with
 // meta-tasks. 0 disables. This is the lossless human-judgment signal (distinct
 // from the punted "was-it-referenced" inference) that feeds floor/recency tuning.
-const VERDICT_RATE = Number(process.env.MACRODATA_RECALL_VERDICT_RATE ?? 0.25);
+const VERDICT_RATE = envNum("MACRODATA_RECALL_VERDICT_RATE", 0.25, 0);
 
 function emitSilent(): never {
   // No output = nothing injected.
@@ -209,6 +209,9 @@ async function main(): Promise<void> {
           rerank: Number(h.score.toFixed(3)),
           rrf: h.rrf != null ? Number(h.rrf.toFixed(4)) : null,
           recency: h.recency != null ? Number(h.recency.toFixed(3)) : null,
+          wRank: h.wRank ?? null,
+          mmrPick: h.mmrPick ?? null,
+          mmrSim: h.mmrSim != null ? Number(h.mmrSim.toFixed(3)) : null,
           ageDays: h.timestamp ? Math.round((Date.now() - Date.parse(h.timestamp)) / 86_400_000) : null,
         })),
         ...extra,
@@ -234,19 +237,32 @@ async function main(): Promise<void> {
       const d = (Date.now() - Date.parse(ts)) / 86_400_000;
       return Number.isNaN(d) ? "evergreen" : d < 1 ? "<1d ago" : `${Math.round(d)}d ago`;
     };
-    const halfLife = Number(process.env.MACRODATA_RECALL_HALFLIFE_DAYS ?? 30);
-    // CLEAN block → model (additionalContext): final score + age only, no diagnostics.
-    const block =
-      "<macrodata-recall>\n" +
-      chunks.map((h) => `- (${h.score.toFixed(2)} · seen ${ageLabel(h.timestamp)}) ${srcLabel(h)}\n  ${h.content.replace(/\s+/g, " ").slice(0, 220)}`).join("\n") +
-      "\n</macrodata-recall>";
-    // DEBUG block → human (systemMessage): per-STAGE numbers so calibration isn't judged
-    // on the conflated final. rerank = final cross-encoder; rrf = fused recall score
+    const halfLife = envNum("MACRODATA_RECALL_HALFLIFE_DAYS", 30, 0.1);
+    // One row format for BOTH surfaces (model additionalContext + human
+    // systemMessage): per-STAGE numbers so neither reader judges calibration on
+    // the conflated final. rerank = final cross-encoder; rrf = fused recall score
     // (pre-rerank); rec = recency factor (0-1, pre-rerank selection only); "seen" =
-    // effective last_accessed age that rec decays from (surfacing bumps it — Porrima semantics).
-    const debugBlock = chunks.map((h) =>
-      `- rerank ${h.score.toFixed(2)} · rrf ${(h.rrf ?? 0).toFixed(3)} · rec (${(h.recency ?? 1).toFixed(2)} · seen ${ageLabel(h.timestamp)}) — ${srcLabel(h)}\n  ${h.content.replace(/\s+/g, " ").slice(0, 220)}`
-    ).join("\n");
+    // effective last_accessed age that rec decays from (surfacing bumps it —
+    // Porrima semantics). The model-facing verdict loop needs the same stage
+    // breakdown the human sees, or its journaled verdicts cite only the final score.
+    // mmr segment: pick order + redundancy penalty at pick time. Omitted (not
+    // defaulted) when absent — absence means MMR was bypassed for that slate.
+    // An absent stage value renders as "?" (unknown — e.g. a version-skewed
+    // inbox), never as a fabricated 0/1 that reads as a measured score.
+    const fmt = (v: number | undefined, digits: number) => (v != null ? v.toFixed(digits) : "?");
+    // w# = pre-MMR rank by retrieval+recency weight — the counterfactual
+    // plain-top-k position. w# above the pool size = MMR created this slot.
+    const mmrSeg = (h: SearchResult) =>
+      h.mmrPick != null ? ` · mmr (#${h.mmrPick} · w#${h.wRank ?? "?"} · sim ${fmt(h.mmrSim, 2)})` : "";
+    // Raw content can quote the literal closing tag (the corpus holds web pages
+    // and transcripts); escape it so a hit can't terminate the model-facing
+    // block early and pass itself off as post-recall context.
+    const excerpt = (s: string) =>
+      s.replace(/\s+/g, " ").split("</macrodata-recall").join("<\\/macrodata-recall").slice(0, 220);
+    const row = (h: SearchResult) =>
+      `- rerank ${h.score.toFixed(2)} · rrf ${fmt(h.rrf, 3)}${mmrSeg(h)} · rec (${fmt(h.recency, 2)} · seen ${ageLabel(h.timestamp)}) — ${srcLabel(h)}\n  ${excerpt(h.content)}`;
+    const block = "<macrodata-recall>\n" + chunks.map(row).join("\n") + "\n</macrodata-recall>";
+    const debugBlock = chunks.map(row).join("\n");
     // Sampled calibration prompt: on ~VERDICT_RATE of injections, ask the agent to
     // journal a usefulness verdict. Goes in additionalContext (model-facing) so the
     // agent acts on it; the human sees a marker in systemMessage. Reinstates the

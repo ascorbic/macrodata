@@ -17,6 +17,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { configure, getLogger, jsonLinesFormatter } from "@logtape/logtape";
 import { z } from "zod";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
@@ -45,6 +46,22 @@ import {
 import { unlinkSync } from "fs";
 import { getRecentJournalEntries, type JournalEntry } from "./journal.js";
 import { cronTooFrequent } from "./reminders.js";
+
+// NDJSON diagnostics on stderr. stdout is the JSON-RPC channel on a stdio MCP
+// server — anything else written there corrupts the protocol — so every
+// macrodata.* record (this module plus the indexer/conversations/embeddings/
+// rerank libraries) routes to stderr, where Claude Code surfaces it in the
+// MCP server logs.
+await configure({
+  sinks: {
+    stderr: (record) => process.stderr.write(jsonLinesFormatter(record)),
+  },
+  loggers: [
+    { category: ["macrodata"], lowestLevel: "debug", sinks: ["stderr"] },
+    { category: ["logtape", "meta"], lowestLevel: "warning", sinks: ["stderr"] },
+  ],
+});
+const logger = getLogger(["macrodata", "mcp"]);
 
 /**
  * Filterable search types: "journal" plus the live entities/<subdir> folder
@@ -187,7 +204,7 @@ server.tool(
     try {
       await indexJournalEntry(entry);
     } catch (err) {
-      console.error("[log_journal] Failed to index entry:", err);
+      logger.error("log_journal: failed to index entry", { error: String(err) });
     }
 
     return {
@@ -333,16 +350,16 @@ server.tool(
         if (action === "rebuild") {
           // Run in background - don't wait
           rebuildConversationIndex()
-            .then((result) => console.log(`[Macrodata] Conversation index rebuilt: ${result.exchangeCount} exchanges`))
-            .catch((err) => console.error(`[Macrodata] Conversation index rebuild failed: ${err}`));
+            .then((result) => logger.info("conversation index rebuilt", { exchanges: result.exchangeCount }))
+            .catch((err) => logger.error("conversation index rebuild failed", { error: String(err) }));
           return {
             content: [{ type: "text" as const, text: `Conversation index rebuild started in background.` }],
           };
         } else if (action === "update") {
           // Incremental update - also background
           updateConversationIndex()
-            .then((result) => console.log(`[Macrodata] Conversation index updated: ${result.filesUpdated} files (${result.skipped} skipped, total: ${result.exchangeCount})`))
-            .catch((err) => console.error(`[Macrodata] Conversation index update failed: ${err}`));
+            .then((result) => logger.info("conversation index updated", { filesUpdated: result.filesUpdated, skipped: result.skipped, exchanges: result.exchangeCount }))
+            .catch((err) => logger.error("conversation index update failed", { error: String(err) }));
           return {
             content: [{ type: "text" as const, text: `Conversation index update started in background.` }],
           };
@@ -504,7 +521,7 @@ server.tool(
     try {
       await indexJournalEntry(entry);
     } catch (err) {
-      console.error("[save_conversation_summary] Failed to index:", err);
+      logger.error("save_conversation_summary: failed to index", { error: String(err) });
     }
 
     return {

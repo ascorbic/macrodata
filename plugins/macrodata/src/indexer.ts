@@ -12,8 +12,15 @@
 import { LocalIndex } from "vectra";
 import { join, basename } from "path";
 import { readFileSync, readdirSync, existsSync, mkdirSync } from "fs";
+import { getLogger } from "@logtape/logtape";
 import { embed, embedBatch, preloadModel as preloadEmbeddings } from "./embeddings.js";
 import { getIndexDir, getEntitiesDir, getJournalDir } from "./config.js";
+
+// Library-side logging: records go to whatever sink the running entrypoint
+// configured (MCP server -> stderr, daemon -> .daemon.log) and are dropped
+// silently in unconfigured processes (hooks, tests) — stdout is never touched,
+// so an MCP stdio process can safely call any function here.
+const logger = getLogger(["macrodata", "indexer"]);
 
 // Item types for filtering
 // "journal", or an entity folder name (people, projects, topics, agents, …).
@@ -76,7 +83,7 @@ async function getIndex(): Promise<LocalIndex> {
 
   // Create if doesn't exist
   if (!(await index.isIndexCreated())) {
-    console.log("[Indexer] Creating new index...");
+    logger.info("creating new index");
     await index.createIndex();
   }
 
@@ -151,7 +158,7 @@ export async function searchMemory(
   // Check if index has items
   const stats = await idx.listItems();
   if (stats.length === 0) {
-    console.log("[Indexer] Index is empty");
+    logger.info("index is empty");
     return [];
   }
 
@@ -235,10 +242,10 @@ function parseJournalForIndexing(): MemoryItem[] {
         }
       }
       if (malformedLines > 0) {
-        console.warn(`[Indexer] Skipped ${malformedLines} malformed lines in journal/${file}`);
+        logger.warn("skipped malformed journal lines", { file, malformedLines });
       }
     } catch (err) {
-      console.warn(`[Indexer] Failed to read journal/${file}: ${String(err)}`);
+      logger.warn("failed to read journal file", { file, error: String(err) });
     }
   }
 
@@ -305,7 +312,7 @@ function parseEntitiesForIndexing(subdir: string, type: MemoryItemType): MemoryI
  * Rebuild the entire index from scratch
  */
 export async function rebuildIndex(): Promise<{ itemCount: number }> {
-  console.log("[Indexer] Starting full index rebuild...");
+  logger.info("starting full index rebuild");
   const startTime = Date.now();
 
   // Rebuild is upsert-only: it deliberately does NOT delete+recreate the index.
@@ -319,7 +326,7 @@ export async function rebuildIndex(): Promise<{ itemCount: number }> {
   const allItems: MemoryItem[] = [];
 
   // 1. Index journal entries
-  console.log("[Indexer] Parsing journal...");
+  logger.info("parsing journal");
   allItems.push(...parseJournalForIndexing());
 
   // 2. Index every entity subdirectory (people, projects, topics, agents, …).
@@ -331,17 +338,17 @@ export async function rebuildIndex(): Promise<{ itemCount: number }> {
       // Skip non-dirs and dot-dirs (.obsidian, .git, .trash) so tooling
       // artifacts don't become bogus entity types.
       if (!dirent.isDirectory() || dirent.name.startsWith(".")) continue;
-      console.log(`[Indexer] Parsing ${dirent.name}...`);
+      logger.info("parsing entity category", { category: dirent.name });
       allItems.push(...parseEntitiesForIndexing(dirent.name, dirent.name));
     }
   }
 
   // Index all items
-  console.log(`[Indexer] Indexing ${allItems.length} items...`);
+  logger.info("indexing items", { items: allItems.length });
   await indexItems(allItems);
 
   const duration = Date.now() - startTime;
-  console.log(`[Indexer] Index rebuild complete in ${duration}ms`);
+  logger.info("index rebuild complete", { ms: duration });
 
   return { itemCount: allItems.length };
 }
@@ -385,7 +392,7 @@ export async function indexEntityFile(filePath: string): Promise<void> {
   // code change — same source of truth as rebuildIndex.
   const match = filePath.match(/\/entities\/([^/]+)\//);
   if (!match) {
-    console.error(`[Indexer] Not an entity path, skipping: ${filePath}`);
+    logger.error("not an entity path, skipping", { filePath });
     return;
   }
   const subdir = match[1];
@@ -432,9 +439,9 @@ export async function indexEntityFile(filePath: string): Promise<void> {
     }
 
     await indexItems(items);
-    console.log(`[Indexer] Indexed ${items.length} sections from ${basename(filePath)}`);
+    logger.info("indexed entity file", { file: basename(filePath), sections: items.length });
   } catch (err) {
-    console.error(`[Indexer] Failed to index ${filePath}: ${String(err)}`);
+    logger.error("failed to index entity file", { filePath, error: String(err) });
   }
 }
 

@@ -13,9 +13,15 @@
 import { readdirSync, readFileSync, existsSync, statSync, writeFileSync, mkdirSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
+import { getLogger } from "@logtape/logtape";
 import { embed, embedBatch } from "./embeddings.js";
 import { LocalIndex } from "vectra";
 import { getIndexDir } from "./config.js";
+
+// Library-side logging: sink comes from the entrypoint's configure() (MCP
+// server -> stderr, daemon -> .daemon.log); unconfigured processes drop the
+// records. Never writes to stdout, so MCP stdio callers are safe.
+const logger = getLogger(["macrodata", "conversations"]);
 
 // Index state tracking for incremental updates
 interface IndexState {
@@ -33,7 +39,7 @@ function loadIndexState(): IndexState {
     try {
       return JSON.parse(readFileSync(statePath, "utf-8"));
     } catch {
-      console.warn("[Conversations] Index state corrupted, starting fresh");
+      logger.warn("index state corrupted, starting fresh");
     }
   }
   return { files: {}, lastUpdate: "" };
@@ -111,7 +117,7 @@ async function getConversationIndex(): Promise<LocalIndex> {
   convIndexPath = currentIndexPath;
 
   if (!(await convIndex.isIndexCreated())) {
-    console.log("[Conversations] Creating new conversation index...");
+    logger.info("creating new conversation index");
     await convIndex.createIndex();
   }
 
@@ -297,10 +303,10 @@ function parseConversationFile(filePath: string, projectPath: string): Conversat
       }
     }
     if (malformedLines > 0) {
-      console.warn(`[Conversations] Skipped ${malformedLines} malformed lines in ${filePath}`);
+      logger.warn("skipped malformed lines", { filePath, malformedLines });
     }
   } catch (err) {
-    console.error(`[Conversations] Failed to parse ${filePath}: ${String(err)}`);
+    logger.error("failed to parse session file", { filePath, error: String(err) });
   }
 
   return exchanges;
@@ -342,7 +348,7 @@ function* scanConversationFiles(): Generator<{ filePath: string; projectPath: st
  * Rebuild the conversation index from scratch
  */
 export async function rebuildConversationIndex(): Promise<{ exchangeCount: number }> {
-  console.log("[Conversations] Starting full index rebuild...");
+  logger.info("starting full index rebuild");
   const startTime = Date.now();
 
   const allExchanges: ConversationExchange[] = [];
@@ -357,7 +363,7 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
     };
   }
 
-  console.log(`[Conversations] Found ${allExchanges.length} exchanges`);
+  logger.info("found exchanges", { exchanges: allExchanges.length });
 
   if (allExchanges.length === 0) {
     saveIndexState(newState);
@@ -369,7 +375,7 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
     `${e.project}${e.branch ? ` (${e.branch})` : ""}: ${e.userPrompt}`
   );
 
-  console.log(`[Conversations] Generating embeddings...`);
+  logger.info("generating embeddings");
   const vectors = await embedBatch(texts);
 
   const idx = await getConversationIndex();
@@ -397,7 +403,7 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
   saveIndexState(newState);
 
   const duration = Date.now() - startTime;
-  console.log(`[Conversations] Full rebuild complete in ${duration}ms`);
+  logger.info("full rebuild complete", { ms: duration });
 
   return { exchangeCount: allExchanges.length };
 }
@@ -406,7 +412,7 @@ export async function rebuildConversationIndex(): Promise<{ exchangeCount: numbe
  * Incrementally update the conversation index (only changed files)
  */
 export async function updateConversationIndex(): Promise<{ exchangeCount: number; filesUpdated: number; skipped: number }> {
-  console.log("[Conversations] Starting incremental update...");
+  logger.info("starting incremental update");
   const startTime = Date.now();
 
   const state = loadIndexState();
@@ -414,7 +420,7 @@ export async function updateConversationIndex(): Promise<{ exchangeCount: number
 
   // Check if index exists - if not, do full rebuild
   if (!(await idx.isIndexCreated())) {
-    console.log("[Conversations] No existing index, doing full rebuild");
+    logger.info("no existing index, doing full rebuild");
     const result = await rebuildConversationIndex();
     return { exchangeCount: result.exchangeCount, filesUpdated: 0, skipped: 0 };
   }
@@ -483,7 +489,7 @@ export async function updateConversationIndex(): Promise<{ exchangeCount: number
   saveIndexState(state);
 
   const duration = Date.now() - startTime;
-  console.log(`[Conversations] Incremental update complete in ${duration}ms (${filesUpdated} files updated, ${skipped} skipped)`);
+  logger.info("incremental update complete", { ms: duration, filesUpdated, skipped });
 
   return { exchangeCount: totalExchanges, filesUpdated, skipped };
 }
@@ -520,7 +526,7 @@ export async function searchConversations(
   const stats = await idx.listItems();
   
   if (stats.length === 0) {
-    console.log("[Conversations] Index is empty");
+    logger.info("index is empty");
     return [];
   }
   
@@ -647,7 +653,7 @@ export async function expandConversation(
     }
   }
   if (malformedLines > 0) {
-    console.warn(`[Conversations] Skipped ${malformedLines} malformed lines in ${sessionPath}`);
+    logger.warn("skipped malformed lines", { sessionPath, malformedLines });
   }
 
   // Find the target message index

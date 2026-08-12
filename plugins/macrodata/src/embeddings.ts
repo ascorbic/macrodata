@@ -9,6 +9,11 @@
  */
 
 import type { FeatureExtractionPipeline } from "@huggingface/transformers";
+import { getLogger } from "@logtape/logtape";
+
+// Sink comes from the entrypoint's configure(); unconfigured processes (hooks,
+// tests) drop the records instead of leaking model chatter onto stdout.
+const logger = getLogger(["macrodata", "embeddings"]);
 
 // Singleton pipeline instance (expensive to create)
 let embeddingPipeline: FeatureExtractionPipeline | null = null;
@@ -41,7 +46,7 @@ async function getEmbeddingPipeline(): Promise<FeatureExtractionPipeline> {
 
   try {
     embeddingPipeline = await pipelineLoading;
-    console.log("[Embeddings] Model loaded successfully");
+    logger.info("model loaded");
     return embeddingPipeline;
   } finally {
     pipelineLoading = null;

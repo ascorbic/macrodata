@@ -1,5 +1,5 @@
 /**
- * Cross-encoder reranker (ambient-memory spike).
+ * Cross-encoder reranker.
  *
  * Vectra returns bi-encoder candidates by pooled cosine similarity.
  * This module rescores (query, candidate) pairs with a cross-encoder
@@ -12,7 +12,13 @@
  * Singleton pattern matches getEmbeddingPipeline() in embeddings.ts.
  */
 
+import { getLogger } from "@logtape/logtape";
+
 const MODEL_ID = "Xenova/ms-marco-MiniLM-L-6-v2";
+
+// Sink comes from the entrypoint's configure(); unconfigured processes (hooks,
+// tests) drop the records instead of leaking model chatter onto stdout.
+const logger = getLogger(["macrodata", "rerank"]);
 
 type AnyTokenizer = (
   texts: string[],
@@ -39,7 +45,7 @@ async function loadCrossEncoder(): Promise<void> {
     ]);
     crossEncoderTokenizer = tokenizer as unknown as AnyTokenizer;
     crossEncoderModel = model as unknown as AnyModel;
-    console.log("[Rerank] Cross-encoder loaded");
+    logger.info("cross-encoder loaded");
   })();
 
   try {

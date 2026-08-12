@@ -15,6 +15,7 @@
 
 import { watch } from "chokidar";
 import { spawn } from "child_process";
+import { configure, getLogger, jsonLinesFormatter } from "@logtape/logtape";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
 import { join, basename } from "path";
 import { Cron } from "croner";
@@ -80,16 +81,37 @@ interface Schedule {
   createdAt: string;
 }
 
+// NDJSON to .daemon.log, one appendFileSync per record (atomic under
+// O_APPEND, matching how this file has always been written). Routing the
+// whole macrodata.* tree here also captures the lazily-imported indexer/
+// conversations modules, whose diagnostics previously went to the daemon's
+// detached (and discarded) stdout. getLogFile() is resolved per record so a
+// MACRODATA_ROOT change is honored without reconfiguring.
+await configure({
+  sinks: {
+    file: (record) => appendFileSync(getLogFile(), jsonLinesFormatter(record)),
+  },
+  loggers: [
+    { category: ["macrodata"], lowestLevel: "debug", sinks: ["file"] },
+    { category: ["logtape", "meta"], lowestLevel: "warning", sinks: ["file"] },
+  ],
+});
+const daemonLog = getLogger(["macrodata", "daemon"]);
+
+// LogTape parses {…} in a message string as template placeholders (unmatched
+// ones render as "undefined"), and callers here pass pre-built strings that
+// can embed JSON — so escape braces ({{ is LogTape's literal {) instead of
+// letting payload text hit the template parser.
+function asLiteral(message: string): string {
+  return message.replaceAll("{", "{{").replaceAll("}", "}}");
+}
+
 function log(message: string) {
-  const ts = new Date().toISOString();
-  const line = `[${ts}] ${message}\n`;
-  appendFileSync(getLogFile(), line);
+  daemonLog.info(asLiteral(message));
 }
 
 function logError(message: string) {
-  const ts = new Date().toISOString();
-  const line = `[${ts}] ERROR: ${message}\n`;
-  appendFileSync(getLogFile(), line);
+  daemonLog.error(asLiteral(message));
 }
 
 function writePendingContext(message: string) {

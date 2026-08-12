@@ -28,12 +28,29 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, watch } from "fs";
 import { join } from "path";
+import { configure, getConsoleSink, getLogger, jsonLinesFormatter } from "@logtape/logtape";
 import { pipelineSearch } from "./fts.ts";
 
 const DIR = import.meta.dir;
 const FLOOR = Number(process.env.MACRODATA_RECALL_FLOOR ?? 0.5);
 const LIMIT = Number(process.env.MACRODATA_RECALL_LIMIT ?? 3);
 const REQ_RE = /^\.recall-request-(.+)\.json$/;
+
+// NDJSON to stdout (the supervisor redirects it to .worker.log), so the log is
+// jq-able and every record carries its own timestamp — the log is the primary
+// forensic record for liveness incidents, and protocol-file mtimes vanish as
+// the worker consumes them. Level boundary: warning = degraded but proceeding
+// (a request or result lost, worker healthy); error = operation abandoned.
+await configure({
+  sinks: { console: getConsoleSink({ formatter: jsonLinesFormatter }) },
+  loggers: [
+    { category: ["recall"], lowestLevel: "debug", sinks: ["console"] },
+    { category: ["logtape", "meta"], lowestLevel: "warning", sinks: ["console"] },
+  ],
+});
+const workerLog = getLogger(["recall", "worker"]);   // process lifecycle
+const ingestLog = getLogger(["recall", "ingest"]);   // mailbox protocol: watch, consume, queue
+const pipelineLog = getLogger(["recall", "pipeline"]); // the rerank run itself
 
 interface Request { sid: string; search: string; rerankQuery: string; ts?: string }
 
@@ -65,14 +82,20 @@ let running = false;
 
 async function runPipeline(req: Request): Promise<void> {
   const exclude = loadExclude(req.sid);
+  const l = pipelineLog.with({ sid: req.sid });
   const t0 = Date.now();
+  // Start line pairs with the completion/error line below: a pipeline whose
+  // await never settles is then PROVABLE from the log (a start with no
+  // matching end), not merely inferable from a consumed request that
+  // produced nothing.
+  l.info("pipeline start", { searchChars: req.search.length, excludeSize: exclude.size });
   let hits: Awaited<ReturnType<typeof pipelineSearch>>;
   try {
     hits = await pipelineSearch(req.search, {
       limit: LIMIT, floor: FLOOR, rerankQuery: req.rerankQuery, exclude,
     });
   } catch (e) {
-    console.error(`[worker] ${req.sid}: pipeline error: ${String(e)}`);
+    l.error("pipeline error", { error: String(e) });
     return;
   }
   const ms = Date.now() - t0;
@@ -93,14 +116,14 @@ async function runPipeline(req: Request): Promise<void> {
         servedRerankQuery: req.rerankQuery,
         hits,
       }));
-      console.log(`[worker] ${req.sid}: ${hits.length} hit(s) -> inbox (${ms}ms)`);
+      l.info("hits -> inbox", { hits: hits.length, ms });
     } catch (e) {
       // Dropped result → under-recall (safe), but make it visible: an unwrapped throw
       // here (e.g. ENOSPC) would otherwise vanish as an unhandled rejection on void drain().
-      console.warn(`[worker] ${req.sid}: inbox write failed, result dropped: ${String(e)}`);
+      l.warn("inbox write failed, result dropped", { error: String(e) });
     }
   } else {
-    console.log(`[worker] ${req.sid}: 0 hits (${ms}ms)`);
+    l.info("no hits", { hits: 0, ms });
   }
 }
 
@@ -123,10 +146,19 @@ function ingest(sid: string): void {
   if (!existsSync(p)) return;
   let req: Request;
   try { req = { ...JSON.parse(readFileSync(p, "utf-8")), sid }; }
-  catch (e) { console.warn(`[worker] ${sid}: skipping malformed request file: ${String(e)}`); return; }
+  catch (e) { ingestLog.warn("skipping malformed request file", { sid, error: String(e) }); return; }
   try { unlinkSync(p); } catch {} // consume; latest-wins handled by the map
-  if (!req.search || req.search.length < 8) return;
+  if (!req.search || req.search.length < 8) {
+    // The request file is already consumed at this point — dropping without a
+    // line means a schema-mismatched writer sees its requests vanish.
+    ingestLog.warn("request dropped: search missing or under 8 chars", { sid, searchChars: req.search?.length ?? 0 });
+    return;
+  }
   pending.set(sid, req);
+  // A queued request that never reaches its start line is the drain-wedge
+  // signature (an earlier pipeline's await never settled, so `running` never
+  // cleared) — this line makes that state visible in real time.
+  if (running) ingestLog.info("queued behind active drain", { sid, pending: pending.size });
   void drain();
 }
 
@@ -143,4 +175,4 @@ watch(DIR, (_event, filename) => {
   const m = String(filename).match(REQ_RE);
   if (m) ingest(m[1]);
 });
-console.log(`[worker] watching ${DIR} for .recall-request-*.json (in-process models, floor ${FLOOR}, limit ${LIMIT})`);
+workerLog.info("watching for recall requests", { dir: DIR, floor: FLOOR, limit: LIMIT });

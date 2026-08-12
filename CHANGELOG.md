@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.5
+
+### Patch Changes
+
+- [#47](https://github.com/jasikpark/macrodata/pull/47) [`3c1790f`](https://github.com/jasikpark/macrodata/commit/3c1790f267eb964f969092458078896d99e73a2a) Thanks [@jasikpark](https://github.com/jasikpark)! - spike(ambient-recall): structured worker logging via LogTape. The worker now emits NDJSON records with per-line timestamps under subsystem categories (`recall.worker` / `recall.ingest` / `recall.pipeline`), and the previously-silent paths are visible: a pipeline-start line (a never-settling pipeline is now provable from the log instead of inferable from absence), a warning when the short-search guard drops an already-consumed request, and a queued-behind-active-drain line that surfaces the drain-wedge failure mode in real time.
+
+- [#49](https://github.com/jasikpark/macrodata/pull/49) [`e175304`](https://github.com/jasikpark/macrodata/commit/e1753047c9f45eb707314b5e8f456b78fe4811f4) Thanks [@jasikpark](https://github.com/jasikpark)! - Structured logging via LogTape across the plugin proper. Library modules (`indexer`, `conversations`, `embeddings`, `rerank`) now log NDJSON records under per-module `macrodata.*` categories, routed by whichever entrypoint configured a sink: the MCP server sends diagnostics to stderr, and the daemon appends them to `.daemon.log` (which also captures indexer/conversations records that previously vanished into the daemon's discarded stdout). Fixes a protocol bug: `manage_index` rebuild/update completions were `console.log`ged onto the MCP server's stdout, which is the JSON-RPC channel. In unconfigured processes (hook scripts, tests) records drop silently, so model-load and index chatter can no longer leak into hook output.
+
 ## 0.7.4
 
 ### Patch Changes

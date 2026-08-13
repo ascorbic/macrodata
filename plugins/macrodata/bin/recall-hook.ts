@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Ambient-recall hook (spike) — fires on UserPromptSubmit, PostToolUse
+ * Ambient-recall hook — fires on UserPromptSubmit, PostToolUse
  * (Read/WebSearch/WebFetch), and Stop.
  *
  * Reads a Claude Code hook envelope on stdin, builds a scrubbed query from the
@@ -19,16 +19,23 @@
  * which loads the GGUFs IN THIS per-fire process; debugging only. --query
  * always runs sync.
  *
- * Manual test:  echo '{"tool_name":"Read","tool_input":{"file_path":"x/porrima.md"}}' | MACRODATA_RECALL_MODE=sync bun run hook.ts
- *          or:  bun run hook.ts --query "what is porrima"
+ * Manual test:  echo '{"tool_name":"Read","tool_input":{"file_path":"x/porrima.md"}}' | MACRODATA_RECALL_MODE=sync bun run bin/recall-hook.ts
+ *          or:  bun run bin/recall-hook.ts --query "what is porrima"
  */
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
-import { join } from "path";
-import { envNum, pipelineSearch } from "./fts.ts";
-import type { SearchResult } from "./indexer.ts";
-import { buildHookQuery, analyzeTranscript, scrubOperationalNoise } from "./query.ts";
-import { memKey, recordAccess } from "./access.ts";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
+import { envNum, pipelineSearch } from "../src/recall/fts.ts";
+import type { SearchResult } from "../src/recall/indexer.ts";
+import { buildHookQuery, analyzeTranscript, scrubOperationalNoise } from "../src/recall/query.ts";
+import { memKey, recordAccess } from "../src/recall/access.ts";
+import {
+  getCalibrationLog,
+  getExcludePath,
+  getInboxPath,
+  getInjectedPath,
+  getMailboxDir,
+  getRequestPath,
+} from "../src/recall/config.ts";
 
 const FLOOR = envNum("MACRODATA_RECALL_FLOOR", 0.5, 0);
 const LIMIT = envNum("MACRODATA_RECALL_LIMIT", 3, 1);
@@ -110,9 +117,11 @@ async function main(): Promise<void> {
   if (search.length < MIN_QUERY_CHARS) emitSilent();
 
   const sid = (env.session_id || "").replace(/[^A-Za-z0-9_-]/g, "");
-  const here = (name: string) => join(import.meta.dir, name);
-  const injectedFile = sid ? here(`.recall-injected-${sid}.json`) : "";
-  const excludeFile = sid ? here(`.recall-exclude-${sid}.json`) : "";
+  // Both dirs are created up front: every write below assumes they exist, and on
+  // a fresh state root nothing else has made them yet.
+  mkdirSync(getMailboxDir(), { recursive: true });
+  const injectedFile = sid ? getInjectedPath(sid) : "";
+  const excludeFile = sid ? getExcludePath(sid) : "";
   const atomicWrite = (path: string, data: string): void => {
     // pid-unique tmp: parallel tool calls fire concurrent same-sid hooks, and
     // a shared tmp path lets two writers interleave (write is not atomic
@@ -126,12 +135,12 @@ async function main(): Promise<void> {
   // ---- Unified in-context EXCLUDE (Porrima inContextIds = frozen ∪ delta) ----
   // EXACT, content-keyed, scoped to the live COMPACTION WINDOW, and excluded in the
   // candidate POOL (pre-rerank) so fresh hits backfill → inject MORE, never less.
-  //   delta  = chunks this session's hook injected WITHIN the window (.recall-injected,
+  //   delta  = chunks this session's hook injected WITHIN the window (injected-<sid>,
   //            stored {c,ts} so it window-scopes; Porrima deltaIds, resets at compaction).
   //   frozen = journal entries I AUTHORED in the window (`[topic] content` log_journal
   //            keys, byte-identical to the indexed form; Porrima frozenIds).
   // EXACT match only — we suppress ONLY what we provably produced/injected; anything
-  // uncertain is injected (Caleb's under-cull). Written to .recall-exclude-<sid> so the
+  // uncertain is injected (Caleb's under-cull). Written to exclude-<sid> so the
   // worker (async path) excludes in its pool too. inContextWindow() handles the window.
   type Inj = { c: string; ts: string };
   const loadInjected = (): Inj[] => {
@@ -193,7 +202,7 @@ async function main(): Promise<void> {
       // was just enqueued and will surface as the served query of a later drain.
       const logSearch = servedQuery?.search ?? search;
       const logRerank = servedQuery?.rerankQuery ?? rerankQuery;
-      appendFileSync(here(".recall-calibration.jsonl"), JSON.stringify({
+      appendFileSync(getCalibrationLog(), JSON.stringify({
         // sid segments fires by session — without it the N2 blind-cycle
         // adjacency test can't tell a real post-injection blackout from two
         // unrelated sessions interleaved in this shared flat log.
@@ -294,7 +303,7 @@ async function main(): Promise<void> {
   if (event === "Stop") {
     if (sid) {
       try {
-        atomicWrite(here(`.recall-request-${sid}.json`),
+        atomicWrite(getRequestPath(sid),
           JSON.stringify({ sid, search, rerankQuery, ts: new Date().toISOString(), primedBy: "Stop" }));
       } catch {}
       logCalibration([], { mode: "stop-prime" });
@@ -306,7 +315,7 @@ async function main(): Promise<void> {
   // THIS query for the worker, exit fast. The slow rerank never blocks the tool;
   // results surface one fire later (3fz competitive injection).
   if (MODE === "async") {
-    const inbox = sid ? here(`.recall-inbox-${sid}.json`) : "";
+    const inbox = sid ? getInboxPath(sid) : "";
     let ready: SearchResult[] = [];
     let meta: { requestedAt?: string; servedAt?: string; pipelineMs?: number; servedSearch?: string; servedRerankQuery?: string } = {};
     // Drain accounting (feeds calibration): `drained` = hits the worker had
@@ -385,7 +394,7 @@ async function main(): Promise<void> {
     }
     // Enqueue THIS turn's context for the worker (latest-wins; worker consumes).
     if (sid) {
-      try { atomicWrite(here(`.recall-request-${sid}.json`),
+      try { atomicWrite(getRequestPath(sid),
         JSON.stringify({ sid, search, rerankQuery, ts: new Date().toISOString() })); } catch {}
     }
     if (ready.length > 0) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Ambient-recall async worker (spike).
+ * Ambient-recall async worker.
  *
  * Long-lived process that runs the SLOW pipeline off the hook's blocking path.
  * The hook drops a request file; this worker reranks and writes an inbox file;
@@ -14,27 +14,35 @@
  * per-process FTS corpus build (~160ms) and owns the in-process models
  * (models.ts singletons) — the ONLY process that loads them; the hook never does.
  *
- * Protocol (all files live in this dir, keyed by session_id):
- *   hook  writes  .recall-request-<sid>.json  {sid, search, rerankQuery, ts}
+ * Protocol (all files live in the mailbox dir, keyed by session_id):
+ *   hook  writes  request-<sid>.json  {sid, search, rerankQuery, ts}
  *   worker reads+deletes the request, reranks, writes
- *          .recall-inbox-<sid>.json  {ts, hits: SearchResult[]}
+ *          inbox-<sid>.json  {ts, hits: SearchResult[]}
  *   hook  reads+deletes the inbox on its next fire and injects.
  * In-context exclude: the worker excludes chunks the hook says are already in
- * context by reading .recall-exclude-<sid>.json (the hook computes the window-scoped
+ * context by reading exclude-<sid>.json (the hook computes the window-scoped
  * delta∪frozen set each fire; the worker just consumes it).
  *
- * Run:  bun run worker.ts   (foreground; the supervisor will daemonize it later)
+ * Run:  bun run src/recall/worker.ts   (foreground; bin/recall-supervisor.sh daemonizes it)
+ *
+ * The supervisor appends `--macrodata-recall-worker <state root>` to that
+ * command line. Nothing here parses them — they exist so the supervisor can
+ * identify its own workers in `ps` without matching a source path that changes
+ * with every plugin version. Dropping them makes every worker unreapable.
  */
 
-import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, watch } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, mkdirSync, watch } from "fs";
 import { configure, getConsoleSink, getLogger, jsonLinesFormatter } from "@logtape/logtape";
 import { envNum, pipelineSearch } from "./fts.ts";
+import { getMailboxDir, getRequestPath, getInboxPath, getExcludePath } from "./config.ts";
 
-const DIR = import.meta.dir;
-const FLOOR = Number(process.env.MACRODATA_RECALL_FLOOR ?? 0.5);
-const LIMIT = Number(process.env.MACRODATA_RECALL_LIMIT ?? 3);
-const REQ_RE = /^\.recall-request-(.+)\.json$/;
+// Created before the watch below: fs.watch throws on a missing directory, and on
+// a fresh state root nothing has written the mailbox yet.
+const DIR = getMailboxDir();
+mkdirSync(DIR, { recursive: true });
+const FLOOR = envNum("MACRODATA_RECALL_FLOOR", 0.5, 0);
+const LIMIT = envNum("MACRODATA_RECALL_LIMIT", 3, 1);
+const REQ_RE = /^request-(.+)\.json$/;
 const SWEEP_DEBOUNCE_MS = 50;
 const SWEEP_INTERVAL_MS = 5_000;
 // The protocol is latest-wins, so a request this old belongs to a turn the agent
@@ -63,12 +71,12 @@ const pipelineLog = getLogger(["recall", "pipeline"]); // the rerank run itself
 
 interface Request { sid: string; search: string; rerankQuery: string; ts?: string }
 
-const reqPath = (sid: string) => join(DIR, `.recall-request-${sid}.json`);
-const inboxPath = (sid: string) => join(DIR, `.recall-inbox-${sid}.json`);
+const reqPath = getRequestPath;
+const inboxPath = getInboxPath;
 // The hook computes the window-scoped, EXACT in-context exclude set (delta ∪ frozen,
 // Porrima inContextIds) and writes it here each fire; the worker just consumes it for
 // pool-stage (pre-rerank) exclusion so fresh hits backfill.
-const excludePath = (sid: string) => join(DIR, `.recall-exclude-${sid}.json`);
+const excludePath = getExcludePath;
 
 function loadExclude(sid: string): Set<string> {
   const p = excludePath(sid);

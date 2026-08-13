@@ -1,11 +1,15 @@
 /**
- * Hacky FTS (BM25-lite) + RRF fusion over the spike index — to A/B test the
- * hybrid theory before committing to a real SQLite FTS5 leg.
+ * FTS (BM25-lite) + RRF fusion over the ambient-recall index.
  *
  * FTS leg: in-memory IDF-weighted term scoring over each item's content (rare
  * tokens like "asa"/"porrima" outweigh "memory"/"system"). Vector leg: the
  * existing searchMemory(). Fused via Reciprocal Rank Fusion (K=60), same as
- * Porrima. NOT production — no stemming, no SQLite, corpus rebuilt per process.
+ * Porrima.
+ *
+ * Standing limits, all deliberate: no stemming, no SQLite FTS5, and the corpus
+ * is rebuilt per process (~160ms). That last one is affordable only because the
+ * worker is long-lived — anything that runs the pipeline per fire pays it every
+ * time.
  */
 
 import { LocalIndex } from "vectra";

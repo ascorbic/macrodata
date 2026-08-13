@@ -3,7 +3,7 @@
  * no index/models needed; synthetic candidates only.
  */
 import { describe, expect, test } from "bun:test";
-import { mmrSelect, type PoolCandidate } from "./fts.ts";
+import { mmrSelect, type PoolCandidate } from "../src/recall/fts.ts";
 
 function cand(content: string, w: number): PoolCandidate {
   return {

@@ -136,7 +136,7 @@ function scanTranscript(transcriptPath: string, maxMessages: number): Transcript
           tool += " " + toolIntent(b.input);
           // Frozen-set capture: journal entries I authored in the current window,
           // keyed `[topic] content` byte-identical to the indexed form.
-          if (e.type === "assistant" && /log_journal$/.test(String(b.name || "")) && b.input
+          if (e.type === "assistant" && String(b.name || "").endsWith("log_journal") && b.input
               && typeof b.input.topic === "string" && typeof b.input.content === "string") {
             authoredKeys.add(`[${b.input.topic}] ${b.input.content}`);
           }

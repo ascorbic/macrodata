@@ -86,6 +86,14 @@
 						"command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-files.sh"
 					}
 				]
+			},
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/recall-supervisor.sh"
+					}
+				]
 			}
 		],
 		"UserPromptSubmit": [
@@ -103,6 +111,35 @@
 						"type": "command",
 						"command": "${CLAUDE_PLUGIN_ROOT}/bin/suggest-memory-tools.sh",
 						"timeout": 5
+					}
+				]
+			},
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bun run ${CLAUDE_PLUGIN_ROOT}/bin/recall-hook.ts"
+					}
+				]
+			}
+		],
+		"PostToolUse": [
+			{
+				"matcher": "Read|WebSearch|WebFetch",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bun run ${CLAUDE_PLUGIN_ROOT}/bin/recall-hook.ts"
+					}
+				]
+			}
+		],
+		"Stop": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bun run ${CLAUDE_PLUGIN_ROOT}/bin/recall-hook.ts"
 					}
 				]
 			}

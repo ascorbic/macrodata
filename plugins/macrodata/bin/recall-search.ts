@@ -1,16 +1,17 @@
 /**
- * CLI: ad-hoc query against the spike index — for eyeballing retrieval quality.
- *   bun run search-cli.ts "what is porrima"
- *   bun run search-cli.ts "ambient memory" 8
+ * CLI: ad-hoc query against the ambient-recall index — for eyeballing retrieval
+ * quality without waiting for a hook to fire.
+ *   bun run bin/recall-search.ts "what is porrima"
+ *   bun run bin/recall-search.ts "ambient memory" 8
  */
 
-import { searchMemory } from "./indexer.ts";
+import { searchMemory } from "../src/recall/indexer.ts";
 
 const query = process.argv[2];
 const limit = process.argv[3] ? Number(process.argv[3]) : 5;
 
 if (!query) {
-  console.error('usage: bun run search-cli.ts "<query>" [limit]');
+  console.error('usage: bun run bin/recall-search.ts "<query>" [limit]');
   process.exit(1);
 }
 

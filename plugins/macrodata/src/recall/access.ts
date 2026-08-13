@@ -15,12 +15,14 @@
  * access key depends only on content.
  */
 
-import { appendFileSync, existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { createHash } from "crypto";
 import type { SearchResult } from "./indexer.ts";
+import { getAccessLog, getRecallDir } from "./config.ts";
 
-const LOG = join(import.meta.dir, ".access-events.jsonl");
+// Resolved per call, not memoized at import: the state root is configurable at
+// runtime and a long-lived worker must not pin the value it saw at startup.
+const LOG = () => getAccessLog();
 
 // Which event kinds advance last_accessed. Step 2 uses "surfaced" (the free
 // signal — injected = touched) so the clock moves now. This is a mild positive
@@ -45,7 +47,10 @@ export function memKey(r: SearchResult): string {
 export function recordAccess(keys: string[], kind: string, ts: string): void {
   if (keys.length === 0) return;
   try {
-    appendFileSync(LOG, keys.map((key) => JSON.stringify({ ts, key, kind })).join("\n") + "\n");
+    // The recall dir is created on demand: a fresh state root has no .recall/
+    // until something writes, and an append to a missing dir would throw.
+    mkdirSync(getRecallDir(), { recursive: true });
+    appendFileSync(LOG(), keys.map((key) => JSON.stringify({ ts, key, kind })).join("\n") + "\n");
   } catch {}
 }
 
@@ -57,10 +62,11 @@ export interface AccessStat {
 
 export function loadAccessOverlay(): Map<string, AccessStat> {
   const m = new Map<string, AccessStat>();
-  if (!existsSync(LOG)) return m;
+  const log = LOG();
+  if (!existsSync(log)) return m;
   let malformed = 0;
   try {
-    for (const line of readFileSync(LOG, "utf-8").split("\n")) {
+    for (const line of readFileSync(log, "utf-8").split("\n")) {
       if (!line.trim()) continue;
       let e: { ts?: string; key?: string; kind?: string };
       try {
@@ -80,6 +86,6 @@ export function loadAccessOverlay(): Map<string, AccessStat> {
       m.set(e.key, s);
     }
   } catch {}
-  if (malformed > 0) console.warn(`[Access] skipped ${malformed} malformed event line(s) in ${LOG}`);
+  if (malformed > 0) console.warn(`[Access] skipped ${malformed} malformed event line(s) in ${log}`);
   return m;
 }

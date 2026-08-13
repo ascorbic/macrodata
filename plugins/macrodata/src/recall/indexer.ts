@@ -1,10 +1,10 @@
 /**
- * Spike indexer — Qwen3/1024 Vectra index over macrodata markdown.
+ * Ambient-recall indexer — Qwen3/1024 Vectra index over macrodata markdown.
  *
  * Parsing (journal JSONL + per-section entity splitting) is ported verbatim
- * from the plugin's src/indexer.ts so the spike indexes the same units the live
- * system does. The differences are: Qwen3 doc/query embeddings, 1024-dim, and a
- * separate index dir (config.getIndexDir).
+ * from src/indexer.ts so both indexes hold the same units. The differences are:
+ * Qwen3 doc/query embeddings, 1024-dim, and a separate index dir
+ * (config.getIndexDir) — MiniLM/384 and Qwen3/1024 cannot share a Vectra store.
  */
 
 import { LocalIndex } from "vectra";
@@ -90,7 +90,7 @@ async function indexItems(items: MemoryItem[]): Promise<void> {
     const done = Math.min(i + INDEX_BATCH, items.length);
     if (done % (INDEX_BATCH * 10) === 0 || done === items.length) {
       const rate = done / ((Date.now() - t0) / 1000);
-      console.log(`[spike] ${done}/${items.length} indexed (${rate.toFixed(1)} items/s)`);
+      console.log(`[macrodata-recall]${done}/${items.length} indexed (${rate.toFixed(1)} items/s)`);
     }
   }
 }
@@ -197,7 +197,7 @@ export async function pruneOrphans(scanned?: MemoryItem[]): Promise<{ pruned: nu
   // than a genuinely empty corpus, and pruning against it would delete every
   // vector. Refuse rather than reconcile to zero.
   if (items.length === 0) {
-    if (indexed.length > 0) console.log(`[spike] prune skipped: scan found 0 items, index holds ${indexed.length}`);
+    if (indexed.length > 0) console.log(`[macrodata-recall]prune skipped: scan found 0 items, index holds ${indexed.length}`);
     return { pruned: 0, kept: indexed.length };
   }
 
@@ -212,13 +212,13 @@ export async function rebuildIndex(): Promise<{ itemCount: number; pruned: numbe
   const start = Date.now();
   const allItems = collectItems();
 
-  console.log(`[spike] embedding + indexing ${allItems.length} items (Qwen3/1024)…`);
+  console.log(`[macrodata-recall]embedding + indexing ${allItems.length} items (Qwen3/1024)…`);
   await indexItems(allItems);
 
   const { pruned } = await pruneOrphans(allItems);
-  if (pruned > 0) console.log(`[spike] pruned ${pruned} orphaned vectors`);
+  if (pruned > 0) console.log(`[macrodata-recall]pruned ${pruned} orphaned vectors`);
 
-  console.log(`[spike] rebuild complete in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+  console.log(`[macrodata-recall]rebuild complete in ${((Date.now() - start) / 1000).toFixed(1)}s`);
   return { itemCount: allItems.length, pruned };
 }
 

@@ -29,12 +29,21 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, watch } from "fs";
 import { join } from "path";
 import { configure, getConsoleSink, getLogger, jsonLinesFormatter } from "@logtape/logtape";
-import { pipelineSearch } from "./fts.ts";
+import { envNum, pipelineSearch } from "./fts.ts";
 
 const DIR = import.meta.dir;
 const FLOOR = Number(process.env.MACRODATA_RECALL_FLOOR ?? 0.5);
 const LIMIT = Number(process.env.MACRODATA_RECALL_LIMIT ?? 3);
 const REQ_RE = /^\.recall-request-(.+)\.json$/;
+const SWEEP_DEBOUNCE_MS = 50;
+const SWEEP_INTERVAL_MS = 5_000;
+// The protocol is latest-wins, so a request this old belongs to a turn the agent
+// has moved past (or a session that ended): serving it spends a ~5s rerank to
+// write an inbox nobody will ever drain.
+// envNum, not bare Number(): "" would parse to 0 (drop every request as stale)
+// and a non-numeric value to NaN (guard silently off) — and hook.ts already
+// parses this env family through envNum, so the two processes must agree.
+const MAX_REQ_AGE_MS = envNum("MACRODATA_RECALL_MAX_REQ_AGE_MS", 10 * 60_000, 1);
 
 // NDJSON to stdout (the supervisor redirects it to .worker.log), so the log is
 // jq-able and every record carries its own timestamp — the log is the primary
@@ -154,6 +163,13 @@ function ingest(sid: string): void {
     ingestLog.warn("request dropped: search missing or under 8 chars", { sid, searchChars: req.search?.length ?? 0 });
     return;
   }
+  const ageMs = req.ts ? Date.now() - Date.parse(req.ts) : 0;
+  if (ageMs > MAX_REQ_AGE_MS) {
+    // Consumed above, so a stale request costs one line and never re-enters the
+    // sweep — info, not warning: dropping it is the correct outcome.
+    ingestLog.info("request dropped: stale", { sid, ageMs });
+    return;
+  }
   pending.set(sid, req);
   // A queued request that never reaches its start line is the drain-wedge
   // signature (an earlier pipeline's await never settled, so `running` never
@@ -166,13 +182,37 @@ function ingest(sid: string): void {
 // until recall actually fires; the mailbox protocol already tolerates a late
 // first hit. Do not add eager preload here.
 // Initial sweep (pick up requests written before the worker started), then watch.
-for (const f of readdirSync(DIR)) {
-  const m = f.match(REQ_RE);
-  if (m) ingest(m[1]);
+function sweep(): void {
+  // A transient readdir failure (EMFILE under fd pressure, EACCES, ENOENT) must
+  // degrade to one missed sweep — unguarded it would throw inside a timer
+  // callback and kill the worker, which nothing restarts until the next
+  // SessionStart. The interval retries in 5s anyway.
+  let files: string[];
+  try { files = readdirSync(DIR); }
+  catch (e) { ingestLog.warn("sweep skipped: readdir failed", { error: String(e) }); return; }
+  for (const f of files) {
+    const m = f.match(REQ_RE);
+    if (m) ingest(m[1]);
+  }
 }
-watch(DIR, (_event, filename) => {
-  if (!filename) return;
-  const m = String(filename).match(REQ_RE);
-  if (m) ingest(m[1]);
+sweep();
+// Sweep on ANY event in the dir and ignore the reported filename. The hook
+// publishes atomically (write `<path>.<pid>.tmp`, rename into place), and Bun
+// 1.3.14's fs.watch on macOS reports only the tmp name for that pair — the final
+// name is never delivered, so a filename matched against REQ_RE never fires for a
+// real request. Measured 2026-08-13: fresh and 250-entry dirs, same- and
+// cross-process writers, fresh and overwritten targets, 0/6 final-name events;
+// the tmp write is the only reliable signal that a request arrived.
+let pendingSweep: ReturnType<typeof setTimeout> | null = null;
+watch(DIR, () => {
+  if (pendingSweep) return;
+  pendingSweep = setTimeout(() => { pendingSweep = null; sweep(); }, SWEEP_DEBOUNCE_MS);
 });
+// Load-bearing, not just a backstop: the debounce drops events during its 50ms
+// window with no trailing re-arm, and whether a rename landing AFTER the
+// debounced sweep delivers any event of its own is Bun-version-dependent
+// (unmeasured on 1.3.14). This interval is the guarantee a request is ever
+// read; the watch path is only a latency optimization. Don't remove or widen
+// it without re-measuring the rename-event behavior.
+setInterval(sweep, SWEEP_INTERVAL_MS);
 workerLog.info("watching for recall requests", { dir: DIR, floor: FLOOR, limit: LIMIT });

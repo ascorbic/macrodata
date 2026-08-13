@@ -1,5 +1,0 @@
----
-"macrodata": patch
----
-
-spike(ambient-recall): fix the worker never seeing a request. Bun's `fs.watch(dir)` on macOS does not deliver an event under the final name of a `tmp` → `rename` publish, and both hook request-writes publish that way (`atomicWrite`), so the worker's filename-matched watch callback never fired for a real request — since the spike's first commit. Recall worked anyway because `ingest()`'s own `unlinkSync` *is* a final-name event, which re-entered the callback and picked up whatever had arrived meanwhile: a self-sustaining chain that lasted only while requests arrived faster than the ~5s rerank, and left the session permanently deaf after the first lull. The watch now ignores the reported filename and re-scans the directory (50ms debounce) on any event, with a 5s interval backstop for a dropped or coalesced FSEvents batch, and drops requests older than `MACRODATA_RECALL_MAX_REQ_AGE_MS` (default 10 min) for one log line instead of a rerank whose inbox nobody will drain.

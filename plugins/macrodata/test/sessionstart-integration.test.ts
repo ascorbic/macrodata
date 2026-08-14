@@ -97,6 +97,14 @@ describe("SessionStart integration", () => {
         // ignore
       }
     }
+    // recall-supervisor.sh starts a worker, which has no pidfile — find it the
+    // way the supervisor does, by the sentinel + root in its argv. Scoped to
+    // this test's root, so it can never reach a worker serving a real store.
+    try {
+      execSync(`pkill -f -- "--macrodata-recall-worker ${ctx.root}" 2>/dev/null || true`);
+    } catch {
+      // ignore
+    }
     ctx.cleanup();
   });
 

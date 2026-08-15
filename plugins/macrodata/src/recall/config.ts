@@ -58,6 +58,17 @@ export function getExcludePath(sid: string): string {
   return join(getMailboxDir(), `exclude-${sid}.json`);
 }
 
+/**
+ * Spawn-time mutex for the worker, claimed exclusively at startup.
+ *
+ * Liveness is answered by `ps` — macrodata-hook.sh matches the argv sentinel —
+ * so this file never decides whether a worker is running. It exists only so that
+ * a burst of spawns settles on one survivor.
+ */
+export function getWorkerPidPath(): string {
+  return join(getRecallDir(), "worker.pid");
+}
+
 export function getCalibrationLog(): string {
   return join(getRecallDir(), "calibration.jsonl");
 }

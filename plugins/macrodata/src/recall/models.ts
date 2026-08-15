@@ -1,8 +1,9 @@
 /**
  * In-process model singletons via node-llama-cpp (Metal GPU) — the -nlc variant's
  * replacement for the external llama-server HTTP endpoints (:8091 embed, :8090
- * rerank) and supervisor.sh. Models load ONCE per process (lazy): fine for the
- * long-lived worker and the one-shot reindex / `--query` CLI, but NOT the per-fire
+ * rerank) and the shell script that kept those servers alive. Models load ONCE
+ * per process (lazy): fine for the long-lived worker and the one-shot reindex /
+ * `--query` CLI, but NOT the per-fire
  * hook — in its default async mode the hook never loads models, the worker does
  * (MACRODATA_RECALL_MODE=sync is the explicit inline-debug override).
  *

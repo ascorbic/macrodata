@@ -16,6 +16,8 @@ import {
   setupMinimalState,
   addJournalEntry,
   addReminder,
+  seedHealthyRecallWorker,
+  killRecallWorkers,
   type TestContext,
 } from "./helpers";
 
@@ -65,12 +67,18 @@ function runHookAsync(
 describe("hook script", () => {
   let ctx: TestContext;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     ctx = createTestContext();
     setupMinimalState(ctx);
+    // Both hook events converge the recall worker. This suite is about the
+    // daemon, pending context and reminders, so stand a healthy worker in front
+    // of it — otherwise every test here spawns a real model-loading one.
+    // Supervision itself is covered by recall-worker-lifecycle.test.ts.
+    await seedHealthyRecallWorker(ctx);
   });
 
   afterEach(() => {
+    killRecallWorkers(ctx.root);
     // Kill any daemon that might have started
     const pidFile = join(ctx.root, ".daemon.pid");
     if (existsSync(pidFile)) {
@@ -138,8 +146,13 @@ describe("hook script", () => {
       expect(remaining).toBe("");
     });
 
-    test("does not re-inject state on file change (state is SessionStart-only now)", () => {
-      runHook(ctx, "session-start");
+    // No daemon is started first, deliberately: its watcher DOES re-inject a
+    // changed state file through .pending-context (macrodata-daemon.ts), so a
+    // live daemon here would make this assert the opposite of what it means.
+    // What's pinned is narrower — the hook never reads state files itself. The
+    // write lands before prompt-submit starts a daemon, so nothing is watching
+    // when it happens.
+    test("never composes state itself (state is SessionStart-only now)", () => {
       writeFileSync(join(ctx.stateDir, "today.md"), "# Today\n\nModified content for testing.\n");
 
       const output = runHook(ctx, "prompt-submit");

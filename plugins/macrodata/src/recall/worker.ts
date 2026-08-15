@@ -23,18 +23,24 @@
  * context by reading exclude-<sid>.json (the hook computes the window-scoped
  * delta∪frozen set each fire; the worker just consumes it).
  *
- * Run:  bun run src/recall/worker.ts   (foreground; bin/recall-supervisor.sh daemonizes it)
+ * Run:  bun run src/recall/worker.ts   (foreground; bin/macrodata-hook.sh daemonizes it)
  *
- * The supervisor appends `--macrodata-recall-worker <state root>` to that
- * command line. Nothing here parses them — they exist so the supervisor can
- * identify its own workers in `ps` without matching a source path that changes
- * with every plugin version. Dropping them makes every worker unreapable.
+ * The hook appends `--macrodata-recall-worker <state root>` to that command
+ * line. Nothing here parses them — not even the root, which this process
+ * resolves through getStateRoot() like every other entry point. They exist so
+ * the hook can identify its own workers in `ps` without matching a source path
+ * that changes with every plugin version. Dropping them makes every worker
+ * unreapable.
+ *
+ * Exactly one worker serves a state root: the first thing this process does is
+ * claim <root>/.recall/worker.pid, and a process that loses the claim exits
+ * before it can load a model.
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, mkdirSync, watch } from "fs";
 import { configure, getConsoleSink, getLogger, jsonLinesFormatter } from "@logtape/logtape";
 import { envNum, pipelineSearch } from "./fts.ts";
-import { getMailboxDir, getRequestPath, getInboxPath, getExcludePath } from "./config.ts";
+import { getMailboxDir, getRequestPath, getInboxPath, getExcludePath, getWorkerPidPath } from "./config.ts";
 
 // Created before the watch below: fs.watch throws on a missing directory, and on
 // a fresh state root nothing has written the mailbox yet.
@@ -53,7 +59,7 @@ const SWEEP_INTERVAL_MS = 5_000;
 // parses this env family through envNum, so the two processes must agree.
 const MAX_REQ_AGE_MS = envNum("MACRODATA_RECALL_MAX_REQ_AGE_MS", 10 * 60_000, 1);
 
-// NDJSON to stdout (the supervisor redirects it to .worker.log), so the log is
+// NDJSON to stdout (the hook redirects it to .recall/worker.log), so the log is
 // jq-able and every record carries its own timestamp — the log is the primary
 // forensic record for liveness incidents, and protocol-file mtimes vanish as
 // the worker consumes them. Level boundary: warning = degraded but proceeding
@@ -68,6 +74,76 @@ await configure({
 const workerLog = getLogger(["recall", "worker"]);   // process lifecycle
 const ingestLog = getLogger(["recall", "ingest"]);   // mailbox protocol: watch, consume, queue
 const pipelineLog = getLogger(["recall", "pipeline"]); // the rerank run itself
+
+const errnoOf = (e: unknown): string =>
+  typeof e === "object" && e !== null && "code" in e ? String((e as { code: unknown }).code) : "";
+
+// EPERM means the process exists and belongs to someone else — alive, and the
+// one answer a mutex must never round down to "gone", since that steals a claim
+// from a process still holding it.
+const alive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch (e) { return errnoOf(e) === "EPERM"; }
+};
+
+/**
+ * Take the single-worker slot for this state root, or exit having loaded nothing.
+ *
+ * macrodata-hook.sh converges the worker on every prompt, so several sessions
+ * that observe the same worker-less root spawn one each — right after an upgrade
+ * reap, or on a first-ever start. Unclaimed, they all live, all drain the one
+ * mailbox, and each loads its own embed and rerank models. Exclusive create
+ * settles the burst on one survivor however tightly the spawns interleave, which
+ * is what the check-then-write in the daemon's start() cannot promise.
+ *
+ * A dead holder is taken over rather than respected: the hook reaps a
+ * previous-version worker with SIGKILL, which leaves no chance to clean up, so a
+ * pidfile outliving its process is the normal case and not a fault.
+ */
+function claimWorkerSlot(): void {
+  const pidPath = getWorkerPidPath();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      writeFileSync(pidPath, `${process.pid}\n`, { flag: "wx" });
+      return;
+    } catch (e) {
+      // Only EEXIST means "someone else got here first". A permission or space
+      // failure reaching the contention path below would end at the warn at the
+      // bottom, and every session on this machine would then start a worker of
+      // its own — the mutex silently gone at exactly the moment the state root
+      // is already unwell.
+      if (errnoOf(e) !== "EEXIST") {
+        workerLog.error("cannot write the worker slot, exiting", { pidPath, err: errnoOf(e) });
+        process.exit(1);
+      }
+      let holder = 0;
+      // Gone between the failed create and this read — another loser cleared a
+      // stale claim, so retry into the race it just opened.
+      try { holder = Number(readFileSync(pidPath, "utf-8").trim()); } catch { continue; }
+      if (holder && holder !== process.pid && alive(holder)) {
+        workerLog.info("another worker already serves this root, exiting", { holder, pidPath });
+        process.exit(0);
+      }
+      try { unlinkSync(pidPath); } catch { /* a peer cleared the same stale claim */ }
+    }
+  }
+  // Three collisions without a live holder means something is churning the file
+  // that isn't a worker taking the slot. Serving recall beats holding the mutex.
+  workerLog.warn("could not claim the worker slot, starting anyway", { pidPath });
+}
+claimWorkerSlot();
+// Only ever removes OUR claim — the content check is what keeps the losing half
+// of a spawn burst from deleting the winner's pidfile on its way out.
+process.on("exit", () => {
+  try {
+    const p = getWorkerPidPath();
+    if (readFileSync(p, "utf-8").trim() === String(process.pid)) unlinkSync(p);
+  } catch { /* already gone, or already someone else's */ }
+});
+// Without these, a SIGTERM'd worker skips the exit handler and leaves a pidfile
+// its successor has to clear. SIGKILL still can't be caught; the takeover above
+// is what covers it.
+process.on("SIGTERM", () => process.exit(0));
+process.on("SIGINT", () => process.exit(0));
 
 interface Request { sid: string; search: string; rerankQuery: string; ts?: string }
 

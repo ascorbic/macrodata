@@ -86,14 +86,6 @@
 						"command": "${CLAUDE_PLUGIN_ROOT}/bin/inject-files.sh"
 					}
 				]
-			},
-			{
-				"hooks": [
-					{
-						"type": "command",
-						"command": "bash ${CLAUDE_PLUGIN_ROOT}/bin/recall-supervisor.sh"
-					}
-				]
 			}
 		],
 		"UserPromptSubmit": [

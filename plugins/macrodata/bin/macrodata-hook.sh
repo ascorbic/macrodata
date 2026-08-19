@@ -96,25 +96,28 @@ inject_pending_context() {
 
 # Session-start preamble is weak: a model with flags in its prefix still answers
 # the prompt instead of relaying them. An instruction injected adjacent to the
-# user's prompt is followed far more reliably, so remind there — once per change
-# to the 🔴 section, tracked by hash in .flags-surfaced.
+# user's prompt is followed far more reliably, so remind there — once per
+# session per 🔴-section state (a global once-per-change marker gets consumed
+# by whichever session fires first, silencing every other session).
+# $1 is the session id from the hook's stdin JSON, may be empty.
 inject_red_flag_reminder() {
     [ -s "$FLAGS" ] || return 0
     local red_section
     red_section=$(awk '/^## /{inred = ($0 ~ /🔴/)} inred' "$FLAGS")
-    local marker="$STATE_ROOT/.flags-surfaced"
+    printf '%s' "$red_section" | grep -q '^- ' || return 0
     local hash
     hash=$(printf '%s' "$red_section" | md5 -q 2>/dev/null || printf '%s' "$red_section" | md5sum | cut -d' ' -f1)
-    [ "$(cat "$marker" 2>/dev/null)" = "$hash" ] && return 0
-    echo "$hash" > "$marker"
-    if printf '%s' "$red_section" | grep -q '^- '; then
-        cat <<EOF
+    local key="${1:-global}:$hash"
+    local seen="$STATE_ROOT/.flags-surfaced"
+    grep -qxF "$key" "$seen" 2>/dev/null && return 0
+    echo "$key" >> "$seen"
+    tail -n 200 "$seen" > "$seen.tmp" && mv "$seen.tmp" "$seen"
+    cat <<EOF
 <macrodata-red-flags>
 Unresolved 🔴 flags the user has not yet been shown. Relay these at the start of your reply — one line each — before addressing their prompt:
 $red_section
 </macrodata-red-flags>
 EOF
-    fi
 }
 
 get_recent_journal() {
@@ -289,7 +292,8 @@ case "$1" in
         # once at session-start and stays in the cached prefix; re-dumping it here
         # would bloat the running context every turn and defeat prompt caching.
         inject_pending_context
-        inject_red_flag_reminder
+        SESSION_ID=$(jq -r '.session_id // empty' 2>/dev/null)
+        inject_red_flag_reminder "$SESSION_ID"
         ;;
     *)
         echo "Usage: $0 {session-start|prompt-submit}" >&2

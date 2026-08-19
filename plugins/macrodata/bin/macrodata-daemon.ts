@@ -56,6 +56,22 @@ function getDaemonDir() {
   return getStateRoot();
 }
 
+function parseRedFlags(markdown: string): string[] {
+  const flags: string[] = [];
+  let inRed = false;
+  for (const line of markdown.split("\n")) {
+    if (line.startsWith("## ")) {
+      inRed = line.includes("🔴");
+      continue;
+    }
+    if (inRed && line.startsWith("- ")) {
+      const name = line.match(/\*\*(.+?)\*\*/)?.[1] ?? line.slice(2);
+      flags.push(name.trim());
+    }
+  }
+  return flags;
+}
+
 function getPidFile() {
   return join(getDaemonDir(), ".daemon.pid");
 }
@@ -266,23 +282,14 @@ class MacrodataLocalDaemon {
     log("Starting macrodata local daemon");
     log(`State root: ${getStateRoot()}`);
 
-    // Check if already running
+    // Acquire the PID file atomically: an existsSync check followed by a
+    // plain write lets two daemons started in the same instant both pass
+    // the guard and run forever as duplicates, double-firing every cron.
     ensureDirectories();
     const pidFile = getPidFile();
-    if (existsSync(pidFile)) {
-      const existingPid = readFileSync(pidFile, "utf-8").trim();
-      try {
-        process.kill(parseInt(existingPid, 10), 0); // Check if process exists
-        log(`Daemon already running (PID ${existingPid}), exiting`);
-        process.exit(0);
-      } catch {
-        // Process doesn't exist, stale PID file - continue startup
-        log(`Removing stale PID file (was ${existingPid})`);
-      }
+    if (!this.acquirePidFile(pidFile)) {
+      process.exit(0);
     }
-
-    // Write PID file
-    writeFileSync(pidFile, process.pid.toString());
 
     // Set up signal handlers
     process.on("SIGTERM", () => this.shutdown());
@@ -310,6 +317,30 @@ class MacrodataLocalDaemon {
 
     // Keep process alive
     log("Daemon running");
+  }
+
+  private acquirePidFile(pidFile: string): boolean {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        writeFileSync(pidFile, process.pid.toString(), { flag: "wx" });
+        return true;
+      } catch {
+        let existingPid = "";
+        try {
+          existingPid = readFileSync(pidFile, "utf-8").trim();
+          process.kill(parseInt(existingPid, 10), 0);
+          log(`Daemon already running (PID ${existingPid}), exiting`);
+          return false;
+        } catch {
+          log(`Removing stale PID file (was ${existingPid || "unreadable"})`);
+          try {
+            unlinkSync(pidFile);
+          } catch {}
+        }
+      }
+    }
+    log("Could not acquire PID file after retry, exiting");
+    return false;
   }
 
   private watchRemindersDir() {
@@ -519,6 +550,9 @@ class MacrodataLocalDaemon {
           const filename = basename(path);
           writePendingContext(`<macrodata-update type="state" file="${filename}">\n${content}\n</macrodata-update>`);
         } catch {}
+        if (basename(path) === "flags.md") {
+          this.notifyNewRedFlags(path);
+        }
       }
       // Entity files - inject just the name
       else if (path.startsWith(entitiesDir)) {
@@ -529,6 +563,33 @@ class MacrodataLocalDaemon {
     });
 
     log(`Watching for state/entity changes in: ${stateRoot}`);
+  }
+
+  /**
+   * Red flags only reach the user if something interrupts them: scheduled
+   * sessions write flags.md, but nothing reads it back to a human. Fire a
+   * macOS notification for 🔴 bullets not seen before, tracked in
+   * .flags-notified (outside the watched state/ dir).
+   */
+  private notifyNewRedFlags(flagsPath: string) {
+    try {
+      const seenFile = join(getDaemonDir(), ".flags-notified");
+      const current = parseRedFlags(readFileSync(flagsPath, "utf-8"));
+      const seen = new Set(
+        existsSync(seenFile) ? readFileSync(seenFile, "utf-8").split("\n").filter(Boolean) : [],
+      );
+      const fresh = current.filter((f) => !seen.has(f));
+      writeFileSync(seenFile, current.join("\n"));
+      if (fresh.length === 0) return;
+      const detail = fresh.length === 1 ? fresh[0] : `${fresh[0]} (+${fresh.length - 1} more)`;
+      const text = detail.replace(/["\\]/g, "").slice(0, 200);
+      spawn("osascript", ["-e", `display notification "${text}" with title "macrodata: new red flag"`], {
+        stdio: "ignore",
+      }).unref();
+      log(`Notified ${fresh.length} new red flag(s): ${fresh.join(" | ")}`);
+    } catch (err) {
+      logError(`Flag notification failed: ${String(err)}`);
+    }
   }
 
   private reindexQueue: Set<string> = new Set();

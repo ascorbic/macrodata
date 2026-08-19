@@ -94,6 +94,29 @@ inject_pending_context() {
     fi
 }
 
+# Session-start preamble is weak: a model with flags in its prefix still answers
+# the prompt instead of relaying them. An instruction injected adjacent to the
+# user's prompt is followed far more reliably, so remind there — once per change
+# to the 🔴 section, tracked by hash in .flags-surfaced.
+inject_red_flag_reminder() {
+    [ -s "$FLAGS" ] || return 0
+    local red_section
+    red_section=$(awk '/^## /{inred = ($0 ~ /🔴/)} inred' "$FLAGS")
+    local marker="$STATE_ROOT/.flags-surfaced"
+    local hash
+    hash=$(printf '%s' "$red_section" | md5 -q 2>/dev/null || printf '%s' "$red_section" | md5sum | cut -d' ' -f1)
+    [ "$(cat "$marker" 2>/dev/null)" = "$hash" ] && return 0
+    echo "$hash" > "$marker"
+    if printf '%s' "$red_section" | grep -q '^- '; then
+        cat <<EOF
+<macrodata-red-flags>
+Unresolved 🔴 flags the user has not yet been shown. Relay these at the start of your reply — one line each — before addressing their prompt:
+$red_section
+</macrodata-red-flags>
+EOF
+    fi
+}
+
 get_recent_journal() {
     local count="${1:-5}"
     
@@ -211,6 +234,8 @@ $USER_INFO
         CONTEXT="<macrodata>
 <macrodata-flags>
 $([ -s "$FLAGS" ] && cap_file "$FLAGS" "$CAP_FLAGS" || echo "_No open flags_")
+
+If the 🔴 section above has items, surface them to the user at the start of your first reply — one line each — before addressing their prompt. Flags only reach the user when said out loud.
 </macrodata-flags>
 
 <macrodata-today>
@@ -264,6 +289,7 @@ case "$1" in
         # once at session-start and stays in the cached prefix; re-dumping it here
         # would bloat the running context every turn and defeat prompt caching.
         inject_pending_context
+        inject_red_flag_reminder
         ;;
     *)
         echo "Usage: $0 {session-start|prompt-submit}" >&2

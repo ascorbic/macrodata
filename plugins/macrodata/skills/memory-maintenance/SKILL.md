@@ -5,6 +5,8 @@ description: End of day memory maintenance. Runs distillation, updates state fil
 
 # Memory Maintenance
 
+**FIRST, before distillation or any reads:** if you have not already banked a heartbeat journal entry (topic `memory-maintenance`) claiming this run, do it NOW, then re-read recent `memory-maintenance` journal entries. If a sibling banked an earlier heartbeat for tonight, stand down: contribute deltas via journal only, never state files. Scheduled runs can double-fire; the journal write claims, the re-read arbitrates.
+
 Scheduled maintenance to keep memory current and useful. Runs automatically at end of day.
 
 **Important:** This runs in the background with no user interaction. Do not ask questions - make decisions and note uncertainties in the journal.

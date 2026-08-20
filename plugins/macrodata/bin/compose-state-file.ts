@@ -36,6 +36,15 @@ const DEFAULT_BUDGET: Budget = { chars: 9000, lines: 150 };
 // patterns → a reference file).
 const BUDGETS: Record<string, Budget> = {};
 
+// Appended after the file content inside the wrapper tag. Used to bake
+// standing instructions into a section (e.g. flags surface directive).
+const SUFFIXES: Record<string, string> = {
+  "flags.md": "\n\nIf the 🔴 section above has items, surface them to the user at the start of your first reply — one line each — before addressing their prompt. Flags only reach the user when said out loud.",
+};
+
+// Files that emit nothing at all when absent or empty (no wrapper tag).
+const SILENT_WHEN_EMPTY = new Set(["flags.md"]);
+
 const arg = process.argv[2];
 if (!arg) {
   console.error("usage: compose-state-file.ts <file.md>");
@@ -105,5 +114,10 @@ function headKeep(content: string, b: Budget): Kept {
   return { out, truncated: true };
 }
 
-const { out } = headKeep(neutralizeTags(readStateFile()), budget);
+const raw = readStateFile();
+if (SILENT_WHEN_EMPTY.has(file) && (raw === "_Empty_" || raw === "_unavailable_")) {
+  process.exit(0);
+}
+const suffix = SUFFIXES[file] ?? "";
+const { out } = headKeep(suffix + neutralizeTags(raw), budget);
 process.stdout.write(`<macrodata-${tag}>\n${out}\n</macrodata-${tag}>`);

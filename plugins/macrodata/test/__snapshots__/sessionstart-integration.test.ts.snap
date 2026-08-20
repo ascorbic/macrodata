@@ -50,6 +50,12 @@ Macrodata relies on you to write and maintain your memory files. You work best w
 ### State Files
 These are always available in context, so use them for things that you need to always know. Edit these directly using the Edit tool when things change.
 
+**\`state/flags.md\`** - How things reach the user across sessions. One line + pointer per flag.
+- Flags only reach the user when said out loud — silent state file edits terminate in the model's context
+- \`## 🔴 Unresolved\` section: items that MUST be surfaced at session start
+- \`## 🟡 Watch\` section: items to monitor and surface when relevant
+- The daemon fires a macOS notification for new 🔴 items; prompt-submit injects a relay instruction
+
 **\`state/today.md\`** - Update at start of session or when focus shifts
 - Current focus and priorities
 - What you're working on right now

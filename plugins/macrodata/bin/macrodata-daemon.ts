@@ -14,7 +14,7 @@
  */
 
 import { watch } from "chokidar";
-import { spawn } from "child_process";
+import { execSync, spawn } from "child_process";
 import { configure, getLogger, jsonLinesFormatter } from "@logtape/logtape";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
 import { join, basename } from "path";
@@ -38,6 +38,22 @@ async function loadConversationIndexers() {
     updateOpenCodeConversations: oc.updateConversationIndex,
     updateClaudeCodeConversations: cc.updateConversationIndex,
   };
+}
+
+function parseRedFlags(markdown: string): string[] {
+  const flags: string[] = [];
+  let inRed = false;
+  for (const line of markdown.split("\n")) {
+    if (line.startsWith("## ")) {
+      inRed = line.startsWith("## 🔴");
+      continue;
+    }
+    if (inRed && line.startsWith("- ")) {
+      const name = line.match(/\*\*(.+?)\*\*/)?.[1] ?? line.slice(2);
+      flags.push(name.trim());
+    }
+  }
+  return flags.filter(Boolean);
 }
 
 // Daemon-specific path helpers
@@ -291,27 +307,53 @@ class MacrodataLocalDaemon {
   private schedulesWatcher: ReturnType<typeof watch> | null = null;
   private shouldRun = true;
 
+  private acquirePidFile(pidFile: string): boolean {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        writeFileSync(pidFile, process.pid.toString(), { flag: "wx" });
+        return true;
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+          logError(`PID file creation failed: ${String(err)}`);
+          return false;
+        }
+        let existingPid = "";
+        try {
+          existingPid = readFileSync(pidFile, "utf-8").trim();
+          const pid = parseInt(existingPid, 10);
+          process.kill(pid, 0);
+          let cmd = "";
+          try {
+            cmd = execSync(`ps -p ${pid} -o command=`, { encoding: "utf-8" }).trim();
+          } catch {}
+          if (cmd.includes("macrodata-daemon")) {
+            log(`Daemon already running (PID ${existingPid}), exiting`);
+            return false;
+          }
+          log(`PID ${existingPid} alive but not a macrodata daemon (${cmd || "unknown"}), reclaiming`);
+        } catch {
+          log(`Removing stale PID file (was ${existingPid || "empty"})`);
+        }
+        try {
+          unlinkSync(pidFile);
+        } catch (e) {
+          logError(`Failed to remove stale PID file: ${String(e)}`);
+        }
+      }
+    }
+    log("Could not acquire PID file after retry, exiting");
+    return false;
+  }
+
   async start() {
     log("Starting macrodata local daemon");
     log(`State root: ${getStateRoot()}`);
 
-    // Check if already running
     ensureDirectories();
     const pidFile = getPidFile();
-    if (existsSync(pidFile)) {
-      const existingPid = readFileSync(pidFile, "utf-8").trim();
-      try {
-        process.kill(parseInt(existingPid, 10), 0); // Check if process exists
-        log(`Daemon already running (PID ${existingPid}), exiting`);
-        process.exit(0);
-      } catch {
-        // Process doesn't exist, stale PID file - continue startup
-        log(`Removing stale PID file (was ${existingPid})`);
-      }
+    if (!this.acquirePidFile(pidFile)) {
+      process.exit(0);
     }
-
-    // Write PID file
-    writeFileSync(pidFile, process.pid.toString());
 
     // Set up signal handlers
     process.on("SIGTERM", () => this.shutdown());
@@ -540,13 +582,25 @@ class MacrodataLocalDaemon {
 
       log(`File ${event}: ${path}`);
 
-      // State files (working memory) - inject full content
+      // State files (working memory) - inject content, capped so a mid-session
+      // delta can't blow the context budget (mirrors the session-start cap).
       if (path.startsWith(stateDir)) {
         try {
-          const content = readFileSync(path, "utf-8");
+          const raw = readFileSync(path, "utf-8");
+          const cap = 4000;
+          let sliced = raw.length > cap ? raw.slice(0, cap) : raw;
+          const last = sliced.charCodeAt(sliced.length - 1);
+          if (last >= 0xd800 && last <= 0xdbff) sliced = sliced.slice(0, -1);
+          const content =
+            raw.length > cap
+              ? `${sliced}\n[…truncated: ${cap} of ${raw.length} chars. This file is over budget — compact it.]`
+              : sliced;
           const filename = basename(path);
           writePendingContext(`<macrodata-update type="state" file="${filename}">\n${content}\n</macrodata-update>`);
         } catch {}
+        if (basename(path) === "flags.md") {
+          this.debouncedNotifyRedFlags(path);
+        }
       }
       // Entity files - inject just the name
       else if (path.startsWith(entitiesDir)) {
@@ -562,6 +616,36 @@ class MacrodataLocalDaemon {
     });
 
     log(`Watching for state/entity changes in: ${stateRoot}`);
+  }
+
+  private redFlagTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private debouncedNotifyRedFlags(flagsPath: string) {
+    if (this.redFlagTimer) clearTimeout(this.redFlagTimer);
+    this.redFlagTimer = setTimeout(() => this.notifyNewRedFlags(flagsPath), 200);
+  }
+
+  private notifyNewRedFlags(flagsPath: string) {
+    try {
+      const seenFile = join(getDaemonDir(), ".flags-notified");
+      const current = parseRedFlags(readFileSync(flagsPath, "utf-8"));
+      const seen = new Set(
+        existsSync(seenFile) ? readFileSync(seenFile, "utf-8").split("\n").filter(Boolean) : [],
+      );
+      const fresh = current.filter((f) => !seen.has(f));
+      writeFileSync(seenFile, current.join("\n"));
+      if (fresh.length === 0) return;
+      const detail = fresh.length === 1 ? fresh[0] : `${fresh[0]} (+${fresh.length - 1} more)`;
+      const text = detail.replace(/["\\]/g, "").slice(0, 200);
+      const proc = spawn("osascript", ["-e", `display notification "${text}" with title "Macrodata 🔴"`], {
+        stdio: "ignore",
+        detached: true,
+      });
+      proc.on("error", (err) => logError(`osascript notification failed: ${String(err)}`));
+      proc.unref();
+    } catch (err) {
+      logError(`Red flag notification failed: ${String(err)}`);
+    }
   }
 
   private reindexQueue: Set<string> = new Set();

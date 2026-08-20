@@ -5,6 +5,8 @@ description: Deep nightly reflection. Self-improvement, research, pattern recogn
 
 # Dreamtime
 
+**FIRST, before any reads or research:** if you have not already banked a heartbeat journal entry (topic `dreamtime`) claiming this run, do it NOW, then re-read recent `dreamtime` journal entries. If a sibling banked an earlier heartbeat for tonight, stand down: contribute deltas via journal only, never state files. Scheduled runs can double-fire; the journal write claims, the re-read arbitrates.
+
 Dedicated time for deep reflection and self-improvement. Runs automatically late at night when not interrupting work.
 
 **Important:** This runs in the background with no user interaction. Think freely, research openly, update files directly.
@@ -65,6 +67,10 @@ Review workspace.md and recent context:
 - Questions raised but not answered?
 - Ideas mentioned but not explored?
 
+Route findings by audience:
+- Items the **user** needs to see → `state/flags.md` (the cross-session surface channel)
+- Detail, evidence, your own notes → journal
+
 Update workspace.md open threads section.
 
 ### Project Connections
@@ -114,6 +120,7 @@ Update relevant files directly:
 - identity.md - role/values refinements
 - human.md - new understanding
 - workspace.md - open threads
+- flags.md - items the user needs to see cross-session (🔴 unresolved / 🟡 watch)
 - topics/ - new or updated topics (give each entity a `description:` frontmatter)
 - entities/ - project/people updates (add or preserve a `description:` frontmatter — a one-line summary of what the file is)
 - journal - learnings, observations, ideas

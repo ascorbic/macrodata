@@ -52,6 +52,7 @@ PENDING_CONTEXT="$STATE_ROOT/.pending-context"
 PENDING_REMINDERS_DIR="$STATE_ROOT/.pending-reminders"
 LOGFILE="$STATE_ROOT/.daemon.log"
 IDENTITY="$STATE_ROOT/state/identity.md"
+FLAGS="$STATE_ROOT/state/flags.md"
 # Recall logs live under the state root beside the rest of the runtime state, NOT
 # beside the source: the plugin installs into a per-version cache dir, so a
 # source-relative log would be orphaned by every release.
@@ -60,6 +61,19 @@ RECALL_LOGDIR="$STATE_ROOT/.recall"
 # claims it exclusively so a burst of spawns settles on one survivor. Liveness is
 # still decided by `ps` here, never by this file.
 RECALL_PIDFILE="$RECALL_LOGDIR/worker.pid"
+
+# Close every fd above stderr before exec'ing a long-lived background process.
+# bun's spawnSync (which invokes this hook) may open internal pipe fds at
+# unpredictable numbers; a child that inherits any of them prevents the caller
+# from ever seeing EOF on stdout. Portable: /proc/self/fd on Linux, /dev/fd on
+# macOS. Must be called inside a ( subshell ) so the closures don't affect the
+# hook script itself.
+close_inherited_fds() {
+    local fd
+    for fd in $(command ls /proc/self/fd 2>/dev/null || command ls /dev/fd 2>/dev/null); do
+        [ "$fd" -gt 2 ] && eval "exec $fd>&-" 2>/dev/null || true
+    done
+}
 
 # SIGTERM, then SIGKILL, then confirm. Nonzero if the process outlived both: an
 # unverified reap logs a success while the old process keeps doing its job.
@@ -167,10 +181,10 @@ start_daemon() {
 
     local BUN="bun"
     mkdir -p "$STATE_ROOT"
-    # Daemon writes its own PID file; we don't write it here. stdin goes to
-    # /dev/null because nohup redirects only stdout and stderr, and this process
-    # outlives the hook whose stdin is the harness's session pipe.
-    MACRODATA_ROOT="$STATE_ROOT" nohup "$BUN" run "$DAEMON" </dev/null >> "$LOGFILE" 2>&1 &
+    # Daemon writes its own PID file; we don't write it here. The subshell
+    # closes all inherited fds above stderr (see close_inherited_fds) so the
+    # daemon can't hold bun's spawnSync pipe open and block the caller.
+    ( close_inherited_fds; MACRODATA_ROOT="$STATE_ROOT" exec nohup "$BUN" run "$DAEMON" </dev/null >> "$LOGFILE" 2>&1 ) &
 
     # Wait briefly for the daemon to write its PID file (up to 2 seconds).
     local attempts=0
@@ -359,11 +373,11 @@ ensure_recall_worker() {
         return 0
     fi
 
-    # stdin is closed explicitly: nohup redirects stdout and stderr but leaves
-    # stdin alone, so the worker would hold the harness's session pipe open for
-    # its whole life — and prompt-submit reads that same pipe after this returns.
+    # The subshell closes all inherited fds above stderr (see close_inherited_fds)
+    # before exec'ing the worker, so it can't hold bun's spawnSync pipe open.
+    # stdin goes to /dev/null because nohup only redirects stdout and stderr.
     recall_log "worker: down -> starting"
-    ( cd "$PLUGIN_ROOT" && nohup bun run "$RECALL_WORKER" "$RECALL_SENTINEL" "$STATE_ROOT" </dev/null >> "$RECALL_LOGDIR/worker.log" 2>&1 & )
+    ( close_inherited_fds; cd "$PLUGIN_ROOT" && exec nohup bun run "$RECALL_WORKER" "$RECALL_SENTINEL" "$STATE_ROOT" </dev/null >> "$RECALL_LOGDIR/worker.log" 2>&1 ) &
 }
 
 inject_pending_context() {
@@ -371,6 +385,33 @@ inject_pending_context() {
         cat "$PENDING_CONTEXT"
         : > "$PENDING_CONTEXT"  # Clear the file
     fi
+}
+
+# Session-start preamble is weak: a model with flags in its prefix still answers
+# the prompt instead of relaying them. An instruction injected adjacent to the
+# user's prompt is followed far more reliably, so remind there — once per
+# session per 🔴-section state (a global once-per-change marker gets consumed
+# by whichever session fires first, silencing every other session).
+# $1 is the session id from the hook's stdin JSON, may be empty.
+inject_red_flag_reminder() {
+    [ -s "$FLAGS" ] || return 0
+    local red_section
+    red_section=$(awk '/^## /{inred = /^## 🔴/} inred' "$FLAGS" \
+        | sed 's/<\/macrodata/\&lt;\/macrodata/g; s/<macrodata/\&lt;macrodata/g')
+    printf '%s' "$red_section" | grep -q '^- ' || return 0
+    local hash
+    hash=$(printf '%s' "$red_section" | md5 -q 2>/dev/null || printf '%s' "$red_section" | md5sum | cut -d' ' -f1)
+    local key="${1:-global}:$hash"
+    local seen="$STATE_ROOT/.flags-surfaced"
+    grep -qxF "$key" "$seen" 2>/dev/null && return 0
+    echo "$key" >> "$seen"
+    tail -n 200 "$seen" > "$seen.tmp" && mv "$seen.tmp" "$seen"
+    cat <<EOF
+<macrodata-red-flags>
+Unresolved 🔴 flags the user has not yet been shown. Relay these at the start of your reply — one line each — before addressing their prompt:
+$red_section
+</macrodata-red-flags>
+EOF
 }
 
 # Drain fired scheduled tasks. The daemon writes one file per firing into
@@ -447,6 +488,7 @@ case "$1" in
         fi
         inject_pending_context
         inject_reminders "$SESSION_ID"
+        inject_red_flag_reminder "$SESSION_ID"
         ;;
     recall-worker)
         # Standalone lever: converge the worker without touching the daemon.

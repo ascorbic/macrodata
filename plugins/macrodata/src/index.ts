@@ -63,6 +63,7 @@ interface Schedule {
   payload: string;
   agent?: "opencode" | "claude"; // Which agent CLI to trigger
   model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-6")
+  timeoutMs?: number; // Optional child timeout override for this schedule
   createdAt: string;
 }
 
@@ -373,8 +374,9 @@ server.tool(
     description: z.string().describe("What this reminder is for"),
     payload: z.string().describe("Message to process when reminder fires"),
     model: z.string().optional().describe("Model to use (e.g., 'anthropic/claude-opus-4-6' for deep thinking tasks)"),
+    timeoutMs: z.number().optional().describe("Max runtime in ms for the agent run this reminder spawns (default 10 minutes)"),
   },
-  async ({ type, id, expression, description, payload, model }) => {
+  async ({ type, id, expression, description, payload, model, timeoutMs }) => {
     const schedule: Schedule = {
       id,
       type,
@@ -383,6 +385,7 @@ server.tool(
       payload,
       agent: "claude",
       model,
+      timeoutMs,
       createdAt: new Date().toISOString(),
     };
 

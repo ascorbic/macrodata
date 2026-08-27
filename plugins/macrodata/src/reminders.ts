@@ -5,10 +5,10 @@
  * without booting the process. Everything here treats a schedule's
  * id/description/payload/model as UNTRUSTED: a schedule can be planted by any
  * `schedule` MCP-tool call (which model-driven prompt injection can induce),
- * and its fields are later injected verbatim into a live session's context and
- * used to build a filesystem path. So we sanitize at this boundary even though
- * the MCP tool also validates — schedule JSON on disk can predate the tool's
- * validation or be hand-edited.
+ * and its fields are later written into state/reminders.md (injected into
+ * every session via compose-state-file.ts) or passed to a headless spawn. So
+ * we sanitize at this boundary even though the MCP tool also validates —
+ * schedule JSON on disk can predate the tool's validation or be hand-edited.
  */
 
 import { Cron } from "croner";
@@ -66,10 +66,11 @@ export function cronTooFrequent(expression: string, ref: Date = new Date()): boo
 }
 
 /**
- * Reduce a schedule id to a safe filename + XML-attribute token. Drops any
- * path component, keeps only [A-Za-z0-9_-], strips leading separators, caps
- * length. Guarantees: no "/" or ".." (no traversal), no leading "." (the drain
- * skips dotfiles forever), no quote/glob/newline.
+ * Reduce a schedule id to a safe single-token key. Drops any path component,
+ * keeps only [A-Za-z0-9_-], strips leading separators, caps length.
+ * Guarantees: no "/" or ".." (no traversal), no leading ".", no
+ * quote/glob/newline/bracket — so it can serve as the `[id]` upsert key on a
+ * reminders.md entry line and appear in filenames or attributes unquoted.
  */
 export function safeId(id: string): string {
   const base = id.replace(/^.*[\\/]/, "");
@@ -78,36 +79,50 @@ export function safeId(id: string): string {
 }
 
 /**
- * Filename for a schedule's single pending reminder. Keyed by id alone —
- * queue length of one per schedule: a new firing overwrites the prior
- * unclaimed reminder (last-fire-wins), so the dir never grows past the number
- * of distinct schedules.
+ * The only shape a schedule id may take: one filename-safe token. An id is the
+ * `<id>.json` filename under reminders/ and an unquoted XML attribute when the
+ * schedule fires, so every path that deletes by id refuses anything outside
+ * this set instead of joining it — `join(remindersDir, "../../.claude/settings")`
+ * names a file the caller was never allowed to touch. safeId() is the lossy
+ * repair for display keys; this is the strict gate in front of the filesystem.
  */
-export function reminderFileName(id: string): string {
-  return safeId(id);
+export const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function isSafeId(id: string): boolean {
+  return SAFE_ID_RE.test(id);
 }
 
 /**
- * Escape a value for safe interpolation inside an XML attribute. Collapses
- * control chars FIRST: the consumer is an LLM, not an XML parser, so a newline
- * in the description would render as a free-standing line in the block header
- * (above "give it the prompt below verbatim") and read as an injected
- * instruction. Attribute values are single-line, so flattening is correct.
+ * Why a one-shot expression can't be armed, or null if it can. `new Date` turns
+ * an unparseable string into NaN, which is not "in the future" and so reads as
+ * already expired: the schedule tool would report success and the daemon would
+ * delete the file on its next load. A past date is refused for the same reason.
  */
-function attrEscape(s: string): string {
-  return s
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+export function onceExpressionError(expression: string, now: Date = new Date()): string | null {
+  const t = new Date(expression).getTime();
+  if (Number.isNaN(t)) return `"${expression}" is not a valid date — use an ISO datetime like 2026-01-31T10:00:00`;
+  if (t <= now.getTime()) return `${expression} is already in the past`;
+  return null;
+}
+
+/**
+ * Body text for a macOS notification. It lands inside an osascript string
+ * literal, so quotes and backslashes go; control characters go too, because a
+ * NUL byte makes child_process.spawn throw synchronously (ERR_INVALID_ARG_VALUE)
+ * and from a cron callback that exception is fatal to the daemon. Non-string
+ * input (a schedule with neither description nor payload) becomes "".
+ */
+export function notificationText(text: unknown): string {
+  if (typeof text !== "string") return "";
+  return text.replace(/[\u0000-\u001f\u007f"\\]/g, "").slice(0, 200);
 }
 
 /**
  * Neutralize macrodata block openers/closers in free text so an untrusted
- * payload can't close the <macrodata-scheduled-task> frame or forge a sibling
- * block. Mirrors the USER_INFO neutralization in macrodata-hook.sh; leaves
- * other markup intact so legitimate payload text (code, etc.) survives.
+ * payload can't close the <macrodata-reminders> wrapper its entry line is
+ * injected through, or forge a sibling block. Mirrors the USER_INFO
+ * neutralization in macrodata-hook.sh; leaves other markup intact so
+ * legitimate payload text (code, etc.) survives.
  */
 export function neutralizeTags(s: string): string {
   return s
@@ -122,19 +137,50 @@ export interface ReminderInput {
   model?: string;
 }
 
-/** Build the reminder block injected into the active session. */
-export function formatReminder(s: ReminderInput, when: string): string {
-  const id = safeId(s.id);
-  const model = resolveModel(s.model);
-  const description = attrEscape(s.description);
-  const payload = neutralizeTags(s.payload);
-  return `<macrodata-scheduled-task id="${id}" description="${description}" model="${model}">
-[Scheduled task due — ${when}]
-Start a background subagent (Agent tool, run_in_background, model pinned to "${model}") and give it the prompt below verbatim. It uses the macrodata_* tools for memory operations. Don't block on it.
+/** Delivery modes the daemon executes. "session" is a legacy stored value that
+ *  maps to "notify" at fire time (fireSchedule logs the remap). */
+export function resolveDelivery(delivery?: string): "notify" | "headless" {
+  return delivery === "headless" ? "headless" : "notify";
+}
 
-Subagent prompt:
-${payload}
-</macrodata-scheduled-task>`;
+export const REMINDERS_HEADING = "## ⏰ Reminders";
+
+/**
+ * One reminders.md entry line for a fired schedule:
+ *   - [<id>] fired <YYYY-MM-DD HH:MM> — <payload>
+ * The line is the unit of the file — a session removes it with the Edit tool
+ * once the reminder is addressed — so the untrusted payload must stay on it:
+ * newlines collapse to " / " (a raw newline would let a payload forge a
+ * sibling entry or a heading), and macrodata tags are neutralized so the line
+ * can't break the compose-state-file wrapper it's injected through.
+ */
+export function formatReminderEntry(s: ReminderInput, firedAt: Date): string {
+  const id = safeId(s.id);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const when = `${firedAt.getFullYear()}-${pad(firedAt.getMonth() + 1)}-${pad(firedAt.getDate())} ${pad(firedAt.getHours())}:${pad(firedAt.getMinutes())}`;
+  const payload = neutralizeTags(s.payload).replace(/[\r\n]+/g, " / ").trim();
+  return `- [${id}] fired ${when} — ${payload}`;
+}
+
+/**
+ * Upsert an entry line into reminders.md content: replace an existing line for
+ * the same schedule id (a re-fired reminder that was never addressed updates
+ * in place rather than stacking), else append. The ⏰ heading is asserted
+ * whenever it is missing — for a null `existing` (no file yet) and for a file
+ * that lost it to hand-editing. Consumers key on the `- ` entry lines, not the
+ * heading, so this is for the human reading the file, not for delivery.
+ */
+export function upsertReminderLine(existing: string | null, entry: string, id: string): string {
+  const marker = `- [${safeId(id)}] `;
+  const lines = (existing?.trimEnd() || REMINDERS_HEADING).split("\n");
+  if (!lines.some((l) => l.startsWith(REMINDERS_HEADING))) lines.unshift(REMINDERS_HEADING);
+  const at = lines.findIndex((l) => l.startsWith(marker));
+  if (at >= 0) {
+    lines[at] = entry;
+  } else {
+    lines.push(entry);
+  }
+  return lines.join("\n") + "\n";
 }
 
 /**

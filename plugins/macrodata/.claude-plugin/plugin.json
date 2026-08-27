@@ -43,6 +43,14 @@
 				"hooks": [
 					{
 						"type": "command",
+						"command": "${CLAUDE_PLUGIN_ROOT}/bin/compose-state-file.ts reminders.md"
+					}
+				]
+			},
+			{
+				"hooks": [
+					{
+						"type": "command",
 						"command": "${CLAUDE_PLUGIN_ROOT}/bin/compose-state-file.ts identity.md"
 					}
 				]

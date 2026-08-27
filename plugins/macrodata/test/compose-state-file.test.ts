@@ -56,6 +56,24 @@ shipping the sharded hooks
       writeState(ctx, "human.md", "# Human");
       expect(compose(ctx, "human")).toContain("<macrodata-human>");
     });
+
+    test("reminders.md is silent when absent, and carries the relay suffix when present", () => {
+      expect(compose(ctx, "reminders.md")).toBe("");
+
+      writeState(ctx, "reminders.md", "## ⏰ Reminders\n- [lunch] fired 2026-08-21 12:30 — Go eat");
+      const out = compose(ctx, "reminders.md");
+      expect(out).toContain("<macrodata-reminders>");
+      expect(out).toContain("- [lunch] fired 2026-08-21 12:30 — Go eat");
+      expect(out).toContain("remove the line from state/reminders.md");
+    });
+
+    test("reminders.md is silent with a heading but no entries, and relays entries without a heading", () => {
+      writeState(ctx, "reminders.md", "## ⏰ Reminders\n");
+      expect(compose(ctx, "reminders.md")).toBe("");
+
+      writeState(ctx, "reminders.md", "- [lunch] fired 2026-08-21 12:30 — Go eat");
+      expect(compose(ctx, "reminders.md")).toContain("- [lunch] fired 2026-08-21 12:30 — Go eat");
+    });
   });
 
   describe("truncation", () => {

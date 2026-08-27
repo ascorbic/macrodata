@@ -13,6 +13,11 @@ These are always available in context, so use them for things that you need to a
 - `## 🟡 Watch` section: items to monitor and surface when relevant
 - The daemon fires a macOS notification for new 🔴 items; prompt-submit injects a relay instruction
 
+**`state/reminders.md`** - Fired notify-delivery reminders, written by the daemon. One `- [id] fired <time> — <payload>` line per schedule.
+- The daemon posts a macOS notification at fire time and upserts the entry here (a re-fire replaces the schedule's own line)
+- Relay entries to the user with their fired-at times; if one fired hours ago, acknowledge the staleness
+- Once addressed, remove the line with the Edit tool — that's what clears the reminder
+
 **`state/today.md`** - Update at start of session or when focus shifts
 - Current focus and priorities
 - What you're working on right now

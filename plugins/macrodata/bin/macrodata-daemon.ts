@@ -16,11 +16,11 @@
 import { watch } from "chokidar";
 import { execSync, spawn } from "child_process";
 import { configure, getLogger, jsonLinesFormatter } from "@logtape/logtape";
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, renameSync, statSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, unlinkSync, renameSync } from "fs";
 import { join, basename } from "path";
 import { Cron } from "croner";
 import { getStateRoot, getEntitiesDir, getJournalDir, getIndexDir, getRemindersDir } from "../src/config.js";
-import { formatReminder, reminderFileName, buildHeadlessArgs, resolveModel, cronTooFrequent } from "../src/reminders.js";
+import { formatReminderEntry, upsertReminderLine, buildHeadlessArgs, resolveModel, resolveDelivery, cronTooFrequent, isSafeId, notificationText } from "../src/reminders.js";
 
 // The indexing modules pull in @huggingface/transformers + vectra (multi-second
 // import). Load them lazily so the daemon writes its PID file and starts
@@ -74,12 +74,13 @@ function getPendingContext() {
   return join(getStateRoot(), ".pending-context");
 }
 
-// Dedicated channel for fired scheduled tasks, separate from the generic
-// .pending-context state/entity stream. One file per schedule (keyed by id,
-// last-fire-wins) which an active session claims exactly-once by atomic rename
-// (see drain in macrodata-hook.sh). Replaces spawning a metered `claude -p`.
-function getPendingRemindersDir() {
-  return join(getStateRoot(), ".pending-reminders");
+// Fired notify-reminders land in a state file, so they ride the existing
+// state-file rails: compose-state-file.ts injects them at SessionStart, the
+// file watcher's .pending-context update surfaces a fresh fire mid-session,
+// and inject_reminder_relay (macrodata-hook.sh) nudges the model to relay and
+// clear them.
+function getRemindersStateFile() {
+  return join(getStateRoot(), "state", "reminders.md");
 }
 
 interface Schedule {
@@ -90,10 +91,11 @@ interface Schedule {
   payload: string;
   agent?: "opencode" | "claude"; // Which agent to trigger
   model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-6")
-  // How a fired job is delivered. "session" (default): queue a claim-file the
-  // next active session drains as a background subagent. "headless": spawn a
-  // detached `claude --print` on the tick — runs unattended, no-ops on sleep.
-  delivery?: "session" | "headless";
+  // How a fired job is delivered. "notify" (default): upsert an entry into
+  // state/reminders.md + post a macOS notification — no model runs. "headless":
+  // spawn a detached `claude --print` on the tick — runs unattended, no-ops on
+  // sleep. "session" is a legacy stored value that fires as "notify".
+  delivery?: "notify" | "headless" | "session";
   createdAt: string;
 }
 
@@ -138,50 +140,41 @@ function writePendingContext(message: string) {
   }
 }
 
-// Orphaned-claim TTL: a session that crashes between the drain's `mv` and `rm`
-// leaves a `*.claimed.*` file the drain skips forever; a daemon crash mid-write
-// can leave a `.tmp`. Both are swept once they're clearly stale. Real reminders
-// are NOT swept on a timer — they're keyed by schedule id (one per schedule)
-// and each firing overwrites the prior, so they self-bound and stay current.
-const REMINDER_ORPHAN_TTL_MS = 5 * 60 * 1000;
-
-// Queue length of one per schedule: the claim file is keyed by schedule id, so
-// a new firing overwrites any prior unclaimed reminder for that schedule
-// (last-fire-wins — "run maintenance 5×" coalesces to once, latest context).
-// The dir therefore never grows past the number of distinct schedules.
-// Write-then-rename so a draining session never reads a half-written notice;
-// the hook claims the file with a single atomic rename (exactly-once across
-// sessions). reminderFileName/formatReminder sanitize the untrusted id, model,
-// description, and payload (see src/reminders.ts).
-function writeReminderClaim(schedule: Schedule) {
+// One entry line per schedule, keyed by sanitized id: a re-fired reminder
+// that was never addressed updates its own line in place (last-fire-wins)
+// instead of stacking, so the file stays bounded by the number of distinct
+// notify schedules. Write-then-rename so the file watcher and a concurrent
+// session read never see a half-written file. The session removes a line with
+// the Edit tool once the reminder is addressed; formatReminderEntry sanitizes
+// the untrusted id and payload (see src/reminders.ts).
+function upsertReminderEntry(schedule: Schedule) {
   try {
-    const dir = getPendingRemindersDir();
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const name = reminderFileName(schedule.id);
-    const tmp = join(dir, `.${name}.tmp`);
-    const content = formatReminder(schedule, new Date().toLocaleString());
-    writeFileSync(tmp, content + "\n");
-    renameSync(tmp, join(dir, name));
+    const file = getRemindersStateFile();
+    const existing = existsSync(file) ? readFileSync(file, "utf-8") : null;
+    const entry = formatReminderEntry(schedule, new Date());
+    const next = upsertReminderLine(existing, entry, schedule.id);
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, next);
+    renameSync(tmp, file);
   } catch (err) {
-    logError(`Failed to write reminder for ${schedule.id}: ${String(err)}`);
+    logError(`Failed to write reminder entry for ${schedule.id}: ${String(err)}`);
   }
 }
 
-// Sweep stale orphans (claimed-but-not-removed, or half-written tmp). Real
-// reminder files are left alone. Cheap; runs after each firing.
-function gcReminderOrphans() {
-  const dir = getPendingRemindersDir();
-  if (!existsSync(dir)) return;
-  const now = Date.now();
-  for (const name of readdirSync(dir)) {
-    const isOrphan = name.includes(".claimed.") || (name.startsWith(".") && name.endsWith(".tmp"));
-    if (!isOrphan) continue;
-    const path = join(dir, name);
-    try {
-      if (now - statSync(path).mtimeMs > REMINDER_ORPHAN_TTL_MS) unlinkSync(path);
-    } catch (err) {
-      logError(`Failed to GC orphan reminder ${name}: ${String(err)}`);
-    }
+// Post a macOS notification, fire-and-forget. The body goes through
+// notificationText (osascript string literal + spawn's no-NUL rule) and the
+// call is guarded: it runs inside cron callbacks, where a thrown exception
+// takes the daemon down.
+function notifyUser(text: unknown, title: string) {
+  try {
+    const proc = spawn("osascript", ["-e", `display notification "${notificationText(text)}" with title "${title}"`], {
+      stdio: "ignore",
+      detached: true,
+    });
+    proc.on("error", (err) => logError(`osascript notification failed: ${String(err)}`));
+    proc.unref();
+  } catch (err) {
+    logError(`osascript notification failed: ${String(err)}`);
   }
 }
 
@@ -220,7 +213,7 @@ function spawnHeadless(schedule: Schedule) {
 
 function ensureDirectories() {
   const entitiesDir = getEntitiesDir();
-  const dirs = [getDaemonDir(), getStateRoot(), getIndexDir(), entitiesDir, getJournalDir(), getRemindersDir(), getPendingRemindersDir(), join(entitiesDir, "people"), join(entitiesDir, "projects")];
+  const dirs = [getDaemonDir(), getStateRoot(), getIndexDir(), entitiesDir, getJournalDir(), getRemindersDir(), join(entitiesDir, "people"), join(entitiesDir, "projects")];
   for (const dir of dirs) {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
@@ -265,6 +258,14 @@ function loadAllSchedules(): Schedule[] {
       try {
         const content = readFileSync(join(remindersDir, file), "utf-8");
         const schedule = JSON.parse(content) as Schedule;
+        // The filename is the schedule's identity. Job keys, the reminders.md
+        // line, and every delete path derive from it, so a body id such as
+        // "../../.claude/settings" can never name a file outside reminders/.
+        const id = basename(file, ".json");
+        if (schedule.id !== id) {
+          logError(`Schedule ${file} declares id ${JSON.stringify(schedule.id)}; keying it by filename instead`);
+        }
+        schedule.id = id;
         schedules.push(schedule);
       } catch (err) {
         logError(`Failed to load schedule ${file}: ${String(err)}`);
@@ -289,9 +290,13 @@ function saveSchedule(schedule: Schedule) {
 }
 
 function deleteScheduleFile(id: string) {
-  const remindersDir = getRemindersDir();
-  const filePath = join(remindersDir, `${id}.json`);
-  
+  // Ids are filename stems (loadAllSchedules) or came through the MCP tool's
+  // SAFE_ID_RE check; anything else is refused rather than joined into a path.
+  if (!isSafeId(id)) {
+    logError(`Refusing to delete schedule with unsafe id ${JSON.stringify(id)}`);
+    return;
+  }
+  const filePath = join(getRemindersDir(), `${id}.json`);
   try {
     if (existsSync(filePath)) {
       unlinkSync(filePath);
@@ -301,8 +306,20 @@ function deleteScheduleFile(id: string) {
   }
 }
 
+// A running job plus the on-disk content it was armed from. The Cron callback
+// closed over that content, so a reload compares fingerprints to tell an
+// edited schedule (stop and re-arm) from an unchanged one (leave running).
+interface ArmedJob {
+  job: Cron;
+  fingerprint: string;
+}
+
+function fingerprintOf(schedule: Schedule): string {
+  return JSON.stringify(schedule);
+}
+
 class MacrodataLocalDaemon {
-  private cronJobs: Map<string, Cron> = new Map();
+  private cronJobs: Map<string, ArmedJob> = new Map();
   private watcher: ReturnType<typeof watch> | null = null;
   private schedulesWatcher: ReturnType<typeof watch> | null = null;
   private shouldRun = true;
@@ -398,7 +415,7 @@ class MacrodataLocalDaemon {
       this.reloadSchedules();
       try {
         const schedule = JSON.parse(readFileSync(path, "utf-8")) as Schedule;
-        writePendingContext(`<macrodata-update type="schedule-added" id="${schedule.id}">${schedule.description}</macrodata-update>`);
+        writePendingContext(`<macrodata-update type="schedule-added" id="${basename(path, ".json")}">${schedule.description}</macrodata-update>`);
       } catch {}
     });
 
@@ -412,7 +429,7 @@ class MacrodataLocalDaemon {
       this.reloadSchedules();
       try {
         const schedule = JSON.parse(readFileSync(path, "utf-8")) as Schedule;
-        writePendingContext(`<macrodata-update type="schedule-updated" id="${schedule.id}">${schedule.description}</macrodata-update>`);
+        writePendingContext(`<macrodata-update type="schedule-updated" id="${basename(path, ".json")}">${schedule.description}</macrodata-update>`);
       } catch {}
     });
 
@@ -421,71 +438,70 @@ class MacrodataLocalDaemon {
       const id = basename(path, ".json");
       log(`Reminder removed: ${id}`);
       writePendingContext(`<macrodata-update type="schedule-removed" id="${id}" />`);
-      const job = this.cronJobs.get(id);
-      if (job) {
-        job.stop();
-        this.cronJobs.delete(id);
-        log(`Stopped job: ${id}`);
-      }
+      if (this.stopJob(id)) log(`Stopped job: ${id}`);
     });
+  }
+
+  // Arm one loaded schedule. A one-shot with an unparseable date is refused and
+  // left on disk (a hand-edit typo is no reason to lose the file); one whose
+  // time has passed is removed, since nothing is left for it to do.
+  private armSchedule(schedule: Schedule) {
+    if (schedule.type === "cron") {
+      this.startCronJob(schedule);
+      return;
+    }
+    if (schedule.type !== "once") {
+      logError(`Refusing schedule ${schedule.id}: unknown type ${JSON.stringify(schedule.type)}`);
+      return;
+    }
+    const fireTime = new Date(schedule.expression).getTime();
+    if (Number.isNaN(fireTime)) {
+      logError(`Refusing one-shot ${schedule.id}: "${schedule.expression}" is not a valid date`);
+      return;
+    }
+    if (fireTime <= Date.now()) {
+      log(`Skipping expired one-shot: ${schedule.id}`);
+      this.removeSchedule(schedule.id);
+      return;
+    }
+    this.startOnceJob(schedule);
+  }
+
+  private stopJob(id: string): boolean {
+    const armed = this.cronJobs.get(id);
+    if (!armed) return false;
+    armed.job.stop();
+    this.cronJobs.delete(id);
+    return true;
   }
 
   private reloadSchedules() {
     const schedules = loadAllSchedules();
-    const now = Date.now();
-    const currentIds = new Set(this.cronJobs.keys());
+    const onDisk = new Set<string>();
 
     for (const schedule of schedules) {
-      // Skip if already running
-      if (currentIds.has(schedule.id)) {
-        currentIds.delete(schedule.id);
-        continue;
+      onDisk.add(schedule.id);
+      const armed = this.cronJobs.get(schedule.id);
+      if (armed) {
+        if (armed.fingerprint === fingerprintOf(schedule)) continue;
+        // Edited on disk: the running job closed over the old fields.
+        this.stopJob(schedule.id);
+        log(`Reminder edited, re-arming: ${schedule.id}`);
       }
-
-      if (schedule.type === "cron") {
-        this.startCronJob(schedule);
-      } else if (schedule.type === "once") {
-        const fireTime = new Date(schedule.expression).getTime();
-        if (fireTime > now) {
-          this.startOnceJob(schedule);
-        } else {
-          log(`Skipping expired one-shot: ${schedule.id}`);
-          this.removeSchedule(schedule.id);
-        }
-      }
+      this.armSchedule(schedule);
     }
 
-    // Stop jobs that were removed
-    const scheduleIds = new Set(schedules.map(s => s.id));
-    for (const id of currentIds) {
-      if (!scheduleIds.has(id)) {
-        const job = this.cronJobs.get(id);
-        if (job) {
-          job.stop();
-          this.cronJobs.delete(id);
-          log(`Stopped removed job: ${id}`);
-        }
+    for (const id of [...this.cronJobs.keys()]) {
+      if (!onDisk.has(id)) {
+        this.stopJob(id);
+        log(`Stopped removed job: ${id}`);
       }
     }
   }
 
   private loadAndStartSchedules() {
-    const schedules = loadAllSchedules();
-    const now = Date.now();
-
-    for (const schedule of schedules) {
-      if (schedule.type === "cron") {
-        this.startCronJob(schedule);
-      } else if (schedule.type === "once") {
-        const fireTime = new Date(schedule.expression).getTime();
-        if (fireTime > now) {
-          this.startOnceJob(schedule);
-        } else {
-          log(`Skipping expired one-shot: ${schedule.id}`);
-          // Remove expired one-shots
-          this.removeSchedule(schedule.id);
-        }
-      }
+    for (const schedule of loadAllSchedules()) {
+      this.armSchedule(schedule);
     }
   }
 
@@ -498,10 +514,8 @@ class MacrodataLocalDaemon {
       return;
     }
     try {
-      const job = new Cron(schedule.expression, () => {
-        void this.fireSchedule(schedule);
-      });
-      this.cronJobs.set(schedule.id, job);
+      const job = new Cron(schedule.expression, () => this.fireSchedule(schedule));
+      this.cronJobs.set(schedule.id, { job, fingerprint: fingerprintOf(schedule) });
       log(`Started cron job: ${schedule.id} (${schedule.expression})`);
     } catch (err) {
       logError(`Failed to start cron job ${schedule.id}: ${String(err)}`);
@@ -512,54 +526,51 @@ class MacrodataLocalDaemon {
     try {
       const fireTime = new Date(schedule.expression);
       const job = new Cron(fireTime, () => {
-        void this.fireSchedule(schedule);
+        this.fireSchedule(schedule);
         // Remove one-shot after firing
         this.removeSchedule(schedule.id);
       });
-      this.cronJobs.set(schedule.id, job);
+      this.cronJobs.set(schedule.id, { job, fingerprint: fingerprintOf(schedule) });
       log(`Scheduled one-shot: ${schedule.id} at ${schedule.expression}`);
     } catch (err) {
       log(`Failed to schedule one-shot ${schedule.id}: ${String(err)}`);
     }
   }
 
+  // Runs inside a croner callback, where an escaping exception is uncaught and
+  // exits the process — so no single schedule's contents may get that far.
   private fireSchedule(schedule: Schedule) {
-    log(`Firing schedule: ${schedule.id} - ${schedule.description}`);
+    try {
+      log(`Firing schedule: ${schedule.id} - ${schedule.description}`);
 
-    if (schedule.delivery === "headless") {
-      // Run on the tick, unattended (re-added pre-0.3.0 path).
-      spawnHeadless(schedule);
-      return;
+      if (resolveDelivery(schedule.delivery) === "headless") {
+        // Run on the tick, unattended.
+        spawnHeadless(schedule);
+        return;
+      }
+
+      // "notify": two deterministic actions, no model — upsert the reminder into
+      // state/reminders.md (surfaced in sessions by compose-state-file.ts +
+      // inject_reminder_relay) and nudge the human directly via macOS
+      // notification, so the reminder lands even with no session open.
+      if (schedule.delivery === "session") {
+        log(`Schedule ${schedule.id} has legacy delivery "session" — firing as "notify"`);
+      }
+      upsertReminderEntry(schedule);
+      notifyUser(schedule.description || schedule.payload, "Macrodata ⏰");
+      log(`Reminder noted for: ${schedule.id} (state/reminders.md + notification)`);
+    } catch (err) {
+      logError(`Firing ${schedule.id} failed: ${String(err)}`);
     }
-
-    // Default "session": queue a claim-file (one per schedule, last-fire-wins);
-    // the next active session claims it and runs the task as a background subagent.
-    writeReminderClaim(schedule);
-    gcReminderOrphans();
-    log(`Queued reminder for: ${schedule.id} (.pending-reminders)`);
   }
 
   addSchedule(schedule: Schedule) {
-    // Save to individual file
     saveSchedule(schedule);
-
-    // Start the job
-    if (schedule.type === "cron") {
-      this.startCronJob(schedule);
-    } else {
-      this.startOnceJob(schedule);
-    }
+    this.armSchedule(schedule);
   }
 
   removeSchedule(id: string) {
-    // Stop the job
-    const job = this.cronJobs.get(id);
-    if (job) {
-      job.stop();
-      this.cronJobs.delete(id);
-    }
-
-    // Delete the file
+    this.stopJob(id);
     deleteScheduleFile(id);
 
     log(`Removed schedule: ${id}`);
@@ -636,13 +647,7 @@ class MacrodataLocalDaemon {
       writeFileSync(seenFile, current.join("\n"));
       if (fresh.length === 0) return;
       const detail = fresh.length === 1 ? fresh[0] : `${fresh[0]} (+${fresh.length - 1} more)`;
-      const text = detail.replace(/["\\]/g, "").slice(0, 200);
-      const proc = spawn("osascript", ["-e", `display notification "${text}" with title "Macrodata 🔴"`], {
-        stdio: "ignore",
-        detached: true,
-      });
-      proc.on("error", (err) => logError(`osascript notification failed: ${String(err)}`));
-      proc.unref();
+      notifyUser(detail, "Macrodata 🔴");
     } catch (err) {
       logError(`Red flag notification failed: ${String(err)}`);
     }
@@ -696,7 +701,7 @@ class MacrodataLocalDaemon {
     }
 
     // Stop all cron jobs
-    for (const [_id, job] of this.cronJobs) {
+    for (const { job } of this.cronJobs.values()) {
       job.stop();
     }
     this.cronJobs.clear();
@@ -717,7 +722,7 @@ class MacrodataLocalDaemon {
     this.shouldRun = false;
 
     // Stop all cron jobs
-    for (const [_id, job] of this.cronJobs) {
+    for (const { job } of this.cronJobs.values()) {
       job.stop();
     }
     this.cronJobs.clear();

@@ -150,7 +150,7 @@ harness it lives in, give you the surfaces:
 | "I didn't notice X *didn't* happen" | Invert it: a scheduled check that alerts when the expected thing is *absent* (dead-man switch) |
 | "I should react when event E fires" | Bind a hook to the harness event (SessionStart / UserPromptSubmit / PostToolUse / PreCompact) |
 | "I needed to follow up at time T" | `schedule` a one-shot reminder for T |
-| "The operator needed to know, and didn't" | Push a notification (harness `PushNotification` tool), or queue a session-delivered schedule payload |
+| "The operator needed to know, and didn't" | Push a notification (harness `PushNotification` tool), or `schedule` a notify-delivery reminder (macOS notification + state/reminders.md) |
 | "No tool existed for the data I needed" | Wire a new sensor: an MCP server, or a WebFetch / browser check inside a scheduled job |
 | "I keep forgetting to do X" (behavioral) | An imperative rule in `state/identity.md` (always loaded) |
 | "Context didn't carry across sessions" | Edit `state/today.md` / `state/workspace.md` (surfaced every SessionStart), or write an entity |

@@ -11,7 +11,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, afterAll } from "bun:test";
 import { spawn } from "child_process";
-import { existsSync, readFileSync, rmSync } from "fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import {
   createTestContext,
@@ -279,6 +279,108 @@ describe("daemon", () => {
       const log = readFileSync(logFile, "utf-8");
       expect(log).toContain("Reminder removed: remove-me");
       expect(log).toContain("Stopped job: remove-me");
+    });
+  });
+
+  describe("schedule hardening", () => {
+    const readLog = () => readFileSync(join(ctx.root, ".daemon.log"), "utf-8");
+
+    test("re-arms a cron schedule edited on disk", async () => {
+      addReminder(ctx, "edit-me", {
+        type: "cron",
+        expression: "0 0 * * *",
+        description: "Before edit",
+        payload: "Payload",
+      });
+
+      const pid = await startDaemon(ctx);
+      expect(pid).not.toBeNull();
+      await Bun.sleep(500);
+      expect(readLog()).toContain("Started cron job: edit-me");
+
+      // Same id, new expression: the armed job closed over "0 0 * * *".
+      addReminder(ctx, "edit-me", {
+        type: "cron",
+        expression: "0 12 * * *",
+        description: "After edit",
+        payload: "Payload",
+      });
+      await Bun.sleep(1000);
+
+      const log = readLog();
+      expect(log).toContain("Reminder edited, re-arming: edit-me");
+      expect(log.split("Started cron job: edit-me").length - 1).toBe(2);
+    });
+
+    test("keys a schedule by its filename, not the id in its body", async () => {
+      // A decoy one level up from reminders/: the file a body id of
+      // "../victim" would have pointed the expired-once cleanup at.
+      const decoy = join(ctx.root, "victim.json");
+      writeFileSync(decoy, "{}");
+      writeFileSync(
+        join(ctx.remindersDir, "honest.json"),
+        JSON.stringify({
+          id: "../victim",
+          type: "once",
+          expression: "2000-01-01T00:00:00Z",
+          description: "Expired, body id traverses",
+          payload: "Payload",
+        }),
+      );
+
+      const pid = await startDaemon(ctx);
+      expect(pid).not.toBeNull();
+      await Bun.sleep(500);
+
+      const log = readLog();
+      // The log is JSON lines, so the quoted id is escaped; match around it.
+      expect(log).toContain("Schedule honest.json declares id");
+      expect(log).toContain("keying it by filename instead");
+      expect(log).toContain("Skipping expired one-shot: honest");
+      expect(existsSync(join(ctx.remindersDir, "honest.json"))).toBe(false);
+      expect(existsSync(decoy)).toBe(true);
+    });
+
+    test("refuses a one-shot with an unparseable date and keeps the file", async () => {
+      addReminder(ctx, "bad-date", {
+        type: "once",
+        expression: "not-a-date",
+        description: "Typo in the date",
+        payload: "Payload",
+      });
+
+      const pid = await startDaemon(ctx);
+      expect(pid).not.toBeNull();
+      await Bun.sleep(500);
+
+      const log = readLog();
+      expect(log).toContain("Refusing one-shot bad-date:");
+      expect(log).toContain("is not a valid date");
+      expect(existsSync(join(ctx.remindersDir, "bad-date.json"))).toBe(true);
+    });
+
+    test("survives firing a notify schedule with a NUL byte and no description", async () => {
+      // No description → the notification body is the payload; a NUL in a
+      // spawn argument throws synchronously, and inside a cron callback that
+      // used to take the whole daemon down.
+      writeFileSync(
+        join(ctx.remindersDir, "nul-payload.json"),
+        JSON.stringify({
+          id: "nul-payload",
+          type: "once",
+          expression: new Date(Date.now() + 2500).toISOString(),
+          payload: "boom\u0000quiet",
+        }),
+      );
+
+      const pid = await startDaemon(ctx);
+      expect(pid).not.toBeNull();
+      await Bun.sleep(4000);
+
+      expect(isDaemonRunning(pid!)).toBe(true);
+      const log = readLog();
+      expect(log).toContain("Reminder noted for: nul-payload");
+      expect(log).not.toContain("Firing nul-payload failed");
     });
   });
 

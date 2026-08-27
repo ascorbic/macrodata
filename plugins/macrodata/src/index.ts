@@ -20,7 +20,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { configure, getLogger, jsonLinesFormatter } from "@logtape/logtape";
 import { z } from "zod";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, basename } from "path";
 import {
   searchMemory as doSearchMemory,
   indexJournalEntry,
@@ -45,7 +45,7 @@ import {
 } from "./config.js";
 import { unlinkSync } from "fs";
 import { getRecentJournalEntries, type JournalEntry } from "./journal.js";
-import { cronTooFrequent } from "./reminders.js";
+import { cronTooFrequent, SAFE_ID_RE, isSafeId, onceExpressionError } from "./reminders.js";
 
 // NDJSON diagnostics on stderr. stdout is the JSON-RPC channel on a stdio MCP
 // server — anything else written there corrupts the protocol — so every
@@ -90,7 +90,7 @@ interface Schedule {
   payload: string;
   agent?: "opencode" | "claude"; // Which agent CLI to trigger
   model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-6")
-  delivery?: "session" | "headless"; // How a fired job runs (default: session)
+  delivery?: "notify" | "headless" | "session"; // How a fired job runs (default: notify; "session" is legacy, fires as notify)
   createdAt: string;
 }
 
@@ -126,7 +126,11 @@ function loadAllSchedules(): Schedule[] {
     for (const file of files) {
       try {
         const content = readFileSync(join(remindersDir, file), "utf-8");
-        schedules.push(JSON.parse(content));
+        const schedule = JSON.parse(content) as Schedule;
+        // The filename is the id — the daemon keys its jobs the same way — so
+        // list_reminders shows the id that remove_reminder actually needs.
+        schedule.id = basename(file, ".json");
+        schedules.push(schedule);
       } catch {
         // Skip malformed files
       }
@@ -147,10 +151,11 @@ function saveSchedule(schedule: Schedule) {
   writeFileSync(filePath, JSON.stringify(schedule, null, 2));
 }
 
-function deleteScheduleFile(id: string) {
-  const remindersDir = getRemindersDir();
-  const filePath = join(remindersDir, `${id}.json`);
-  
+function deleteScheduleFile(id: string): boolean {
+  // remove_reminder's schema already enforces SAFE_ID_RE; re-checked here so no
+  // caller can join a traversing id into a path.
+  if (!isSafeId(id)) return false;
+  const filePath = join(getRemindersDir(), `${id}.json`);
   try {
     if (existsSync(filePath)) {
       unlinkSync(filePath);
@@ -388,14 +393,14 @@ server.tool(
     // id becomes a filename and an XML attribute when the reminder fires, so
     // constrain it to a safe charset (no path separators, quotes, or glob
     // metacharacters). The daemon re-sanitizes on read for defense in depth.
-    id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "id must be 1-64 chars of [A-Za-z0-9_-]").describe("Unique identifier for this reminder"),
+    id: z.string().regex(SAFE_ID_RE, "id must be 1-64 chars of [A-Za-z0-9_-]").describe("Unique identifier for this reminder"),
     expression: z.string().describe("Cron expression (e.g., '0 9 * * *') or ISO datetime (e.g., '2026-01-31T10:00:00')"),
     description: z.string().describe("What this reminder is for"),
     payload: z.string().describe("Message to process when reminder fires"),
     // No quotes/spaces/angle brackets — keeps it safe inside the reminder's
     // model="..." attribute; the daemon maps it to a known Agent-tool alias.
     model: z.string().regex(/^[A-Za-z0-9/_.-]{1,64}$/, "model must be 1-64 chars of [A-Za-z0-9/_.-]").optional().describe("Model to use (e.g., 'anthropic/claude-opus-4-6' for deep thinking tasks). Omitting it — or passing an unrecognized value — defaults to haiku."),
-    delivery: z.enum(["session", "headless"]).optional().describe("How the fired job runs; pick by intent — both modes are first-class. 'session' (default): queue a reminder drained into your next active session as a background subagent — use when a human should see or act on the result. 'headless': spawn a detached `claude --print` on the tick that runs on schedule with no session open — use when the job should just run on its own. Headless runs unsupervised (and no-ops while the machine is asleep — e.g. a laptop on battery), so give it a payload you trust to run without review — that's a constraint to design around, not a reason to avoid it."),
+    delivery: z.enum(["notify", "headless"]).default("notify").describe("Pick by intent — both modes are first-class. 'notify' (default): a nudge meant to reach the human — the daemon posts a macOS notification at fire time and surfaces the reminder in active sessions via state/reminders.md; no model runs. Write the payload as a message to the user. 'headless': an unattended job — the daemon spawns a detached `claude --print` on the tick, with no session open. Write the payload as instructions to an agent. Headless runs unsupervised (and no-ops while the machine is asleep — e.g. a laptop on battery), so give it a payload you trust to run without review — that's a constraint to design around, not a reason to avoid it."),
   },
   async ({ type, id, expression, description, payload, model, delivery }) => {
     // Reject sub-2-minute cron cadences: macrodata has no use for them, and a
@@ -410,6 +415,18 @@ server.tool(
           },
         ],
       };
+    }
+
+    // A one-shot whose date doesn't parse, or already passed, would be saved,
+    // reported as created, and removed by the daemon on its next load. Refuse
+    // it here, where the caller can see why.
+    if (type === "once") {
+      const reason = onceExpressionError(expression);
+      if (reason) {
+        return {
+          content: [{ type: "text" as const, text: `Not scheduled: ${reason}.` }],
+        };
+      }
     }
 
     const schedule: Schedule = {
@@ -458,7 +475,7 @@ server.tool(
   "remove_reminder",
   "Remove a scheduled reminder",
   {
-    id: z.string().describe("ID of the reminder to remove"),
+    id: z.string().regex(SAFE_ID_RE, "id must be 1-64 chars of [A-Za-z0-9_-]").describe("ID of the reminder to remove"),
   },
   async ({ id }) => {
     const removed = deleteScheduleFile(id);

@@ -40,10 +40,17 @@ const BUDGETS: Record<string, Budget> = {};
 // standing instructions into a section (e.g. flags surface directive).
 const SUFFIXES: Record<string, string> = {
   "flags.md": "\n\nIf the 🔴 section above has items, surface them to the user at the start of your first reply — one line each — before addressing their prompt. Flags only reach the user when said out loud.",
+  "reminders.md": "\n\nThe `- [id] fired …` lines in this block are reminders that fired while no session was open. Relay them to the user at the start of your first reply with their fired-at times; once addressed, remove the line from state/reminders.md with the Edit tool.",
 };
 
 // Files that emit nothing at all when absent or empty (no wrapper tag).
-const SILENT_WHEN_EMPTY = new Set(["flags.md"]);
+const SILENT_WHEN_EMPTY = new Set(["flags.md", "reminders.md"]);
+// reminders.md keeps its heading after the last entry is removed, so for it
+// "empty" is "no `- ` entry line" — a heading alone would otherwise be composed
+// into every session with an instruction that has nothing to act on.
+const HAS_ITEMS: Record<string, (raw: string) => boolean> = {
+  "reminders.md": (raw) => /^- /m.test(raw),
+};
 
 const arg = process.argv[2];
 if (!arg) {
@@ -115,7 +122,8 @@ function headKeep(content: string, b: Budget): Kept {
 }
 
 const raw = readStateFile();
-if (SILENT_WHEN_EMPTY.has(file) && (raw === "_Empty_" || raw === "_unavailable_")) {
+const empty = raw === "_Empty_" || raw === "_unavailable_" || HAS_ITEMS[file]?.(raw) === false;
+if (SILENT_WHEN_EMPTY.has(file) && empty) {
   process.exit(0);
 }
 const suffix = SUFFIXES[file] ?? "";

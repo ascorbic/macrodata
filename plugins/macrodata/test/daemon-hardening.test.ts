@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, afterAll } from "bun:test";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { createTestContext, type TestContext } from "./helpers";
@@ -64,6 +64,24 @@ function stopDaemon(pid: number): void {
   }
 }
 
+async function killTestProcesses(ctx: TestContext, daemonPid: number | null): Promise<void> {
+  // The daemon's kill-timers die with it, so SIGTERM alone can orphan spawned
+  // agent children (and a daemon mid model-load is slow to honor SIGTERM);
+  // anything still referencing this test's root starves later tests
+  if (daemonPid) {
+    stopDaemon(daemonPid);
+    const dead = await waitFor(() => !isDaemonRunning(daemonPid), 3_000);
+    if (!dead) {
+      try {
+        process.kill(daemonPid, "SIGKILL");
+      } catch {
+        // Already dead
+      }
+    }
+  }
+  spawnSync("pkill", ["-9", "-f", ctx.root]);
+}
+
 function isDaemonRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -82,6 +100,16 @@ async function waitFor(predicate: () => boolean, timeoutMs: number, intervalMs =
   return predicate();
 }
 
+async function waitForDaemonIdle(ctx: TestContext): Promise<void> {
+  // The daemon preloads the embedding model at startup, which can starve its
+  // event loop for many seconds; schedule timers only fire reliably after it
+  const logFile = join(ctx.root, ".daemon.log");
+  await waitFor(() => {
+    if (!existsSync(logFile)) return false;
+    return readFileSync(logFile, "utf-8").includes("Embedding model preloaded");
+  }, 30_000, 250);
+}
+
 afterAll(() => {
   for (const { pid } of startedDaemons) {
     stopDaemon(pid);
@@ -96,11 +124,9 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
     ctx = createTestContext("macrodata-hardening-");
   });
 
-  afterEach(() => {
-    if (daemonPid) {
-      stopDaemon(daemonPid);
-      daemonPid = null;
-    }
+  afterEach(async () => {
+    await killTestProcesses(ctx, daemonPid);
+    daemonPid = null;
     ctx.cleanup();
   });
 
@@ -131,6 +157,8 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
     expect(daemonPid).not.toBeNull();
 
     // Fire a once-schedule immediately via the reminders dir
+    await waitForDaemonIdle(ctx);
+
     const fireAt = new Date(Date.now() + 1500).toISOString();
     writeFileSync(
       join(ctx.remindersDir, "hang-test.json"),
@@ -172,6 +200,8 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
     });
     expect(daemonPid).not.toBeNull();
 
+    await waitForDaemonIdle(ctx);
+
     const fireAt = new Date(Date.now() + 1500).toISOString();
     writeFileSync(
       join(ctx.remindersDir, "per-schedule-timeout.json"),
@@ -188,13 +218,15 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
     );
 
     const logFile = join(ctx.root, ".daemon.log");
-    const childKilled = await waitFor(() => {
+    await waitFor(() => {
       if (!existsSync(logFile)) return false;
       const log = readFileSync(logFile, "utf-8");
       return log.includes("exceeded 2000ms timeout");
     }, 20_000, 250);
 
-    expect(childKilled).toBe(true);
+    // Assert on the log itself so a failure shows what the daemon did
+    const log = existsSync(logFile) ? readFileSync(logFile, "utf-8") : "<no log file>";
+    expect(log).toContain("exceeded 2000ms timeout");
     expect(isDaemonRunning(daemonPid as number)).toBe(true);
   }, 30_000);
 
@@ -206,6 +238,8 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
 
     daemonPid = await startDaemon(ctx, { PATH: `${fakeBinDir}:${process.env.PATH}` });
     expect(daemonPid).not.toBeNull();
+
+    await waitForDaemonIdle(ctx);
 
     const fireAt = new Date(Date.now() + 1500).toISOString();
     writeFileSync(

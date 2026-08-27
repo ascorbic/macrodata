@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.9.0
+
+### Minor Changes
+
+- [#64](https://github.com/jasikpark/macrodata/pull/64) [`3d2e7e9`](https://github.com/jasikpark/macrodata/commit/3d2e7e95f6de744e291736faa4f3de6b05af9f83) Thanks [@jasikpark](https://github.com/jasikpark)! - Add red-flag surfacing channel (`state/flags.md`), atomic daemon pidfile acquisition, and heartbeat-first arbitration for scheduled skills.
+
+  **Red-flag surfacing** — scheduled runs can discover issues that never reach the user because they terminate in the model's context. `state/flags.md` is the new cross-session channel: the daemon fires a macOS notification when new 🔴 items appear, and the prompt-submit hook injects a relay instruction once per session (keyed by session_id + section hash, so every session is reminded and a changed section re-fires everywhere).
+
+  **Atomic pidfile** — the daemon's `existsSync` check followed by a plain `writeFileSync` let two daemons started in the same instant both survive the guard, double-firing every cron. The pidfile is now acquired with `writeFileSync(..., { flag: "wx" })`; on collision the holder is liveness-checked, a stale file is unlinked and the acquisition retried once.
+
+  **Heartbeat arbitration** — `dreamtime` and `memory-maintenance` now open by banking a journal heartbeat claiming the run, then re-reading to arbitrate, so if a double-fire does happen the losing twin stands down instead of both writing state.
+
+  Ported from ascorbic/macrodata PRs [#30](https://github.com/jasikpark/macrodata/issues/30) and [#37](https://github.com/jasikpark/macrodata/issues/37).
+
+- [#65](https://github.com/jasikpark/macrodata/pull/65) [`bbfad4b`](https://github.com/jasikpark/macrodata/commit/bbfad4b6e291eac06d428aec86b8faae2c77b401) Thanks [@jasikpark](https://github.com/jasikpark)! - Replace session/subagent reminder delivery with a deterministic `notify` mode.
+
+  - `schedule` now offers two delivery modes: `notify` (default) and `headless`. The `session` mode — claim files drained into active sessions as background subagents — is removed; stored schedules with `delivery: "session"` fire as `notify` automatically.
+  - `notify` runs no model: at fire time the daemon posts a macOS notification and upserts a `- [id] fired <time> — <payload>` line into `state/reminders.md` (a re-fire replaces the schedule's own line). Reminders surface in sessions via the SessionStart compose hook and a prompt-submit relay nudge; removing the line with the Edit tool clears the reminder.
+  - `headless` is unchanged: a detached `claude --print` on the tick.
+  - Schedule hardening: a schedule's identity is its `reminders/<id>.json` filename — the id in the body is ignored for job keys and deletes, and `remove_reminder` refuses any id outside `[A-Za-z0-9_-]{1,64}`, so neither path can be aimed at a file outside `reminders/`. A one-shot whose date doesn't parse (or already passed) is refused by `schedule` with `Not scheduled: …` instead of being saved and silently deleted. Editing a schedule file re-arms its job (the old job kept firing the old fields). Firing runs under a guard, so a payload that breaks the notification (a NUL byte, no text at all) logs an error instead of exiting the daemon.
+  - Relay hardening: the prompt-submit reminder and red-flag relays keep whole lines within a 2,500-byte budget and end with a `… N more line(s) not shown; read state/<file>` marker, so an oversized section can't overflow Claude Code's hook-output cap and erase every block with it. The `## ⏰` heading in `state/reminders.md` is no longer load-bearing: the relay and the SessionStart composer key on `- ` entry lines (a heading-only file composes nothing), and the daemon restores the heading if a hand-edit removed it.
+
+### Patch Changes
+
+- [#62](https://github.com/jasikpark/macrodata/pull/62) [`13f8e25`](https://github.com/jasikpark/macrodata/commit/13f8e251594b89787ffdf7106a4d1b456e6220b1) Thanks [@jasikpark](https://github.com/jasikpark)! - Manage the ambient-recall worker from `macrodata-hook.sh`, on both hook events, so a
+  plugin update takes effect without waiting for a new session. The worker had its own
+  SessionStart-only supervisor, and SessionStart does not fire on `/plugin update` +
+  `/reload-plugins` — so the pass that reaps the previous version's worker only ran once
+  a session happened to open, and until then a freshly installed release kept serving
+  recall from the old cached code. The daemon already converged on every prompt; the
+  worker now does too, through the same verified-kill path. Per-prompt passes stay silent
+  unless they act, so neither the model's context nor the log gets a line per message.
+
+  Converging on every prompt also means concurrent sessions can observe the same
+  worker-less window and spawn into it together, so the worker now claims
+  `.recall/worker.pid` before it can load a model and stands down if another process
+  already serves that state root. A claim whose process is gone is taken over rather
+  than obeyed — the hook stops a stale-version worker with SIGKILL, which never gets to
+  clean up after itself. A reboot restarts the PID space from the bottom, where a
+  surviving claim can name an unrelated live process and mute recall for good, so the
+  hook reads the holder's own command line and clears the claim unless that process is
+  itself a worker.
+
 ## 0.8.1
 
 ### Patch Changes

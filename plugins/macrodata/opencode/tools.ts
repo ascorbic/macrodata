@@ -34,6 +34,7 @@ interface Schedule {
   payload: string;
   agent?: "opencode" | "claude";
   model?: string;
+  timeoutMs?: number;
   createdAt: string;
 }
 
@@ -291,6 +292,7 @@ export const scheduleReminderTool = tool({
     description: tool.schema.string().describe("What this reminder is for"),
     payload: tool.schema.string().describe("Message to process when reminder fires"),
     model: tool.schema.string().optional().describe("Model to use for this reminder (see macrodata-models in context for available options)"),
+    timeoutMs: tool.schema.number().optional().describe("Max runtime in ms for the agent run this reminder spawns (default 10 minutes)"),
   },
   async execute(args) {
     if (!args.id || !args.cronExpression || !args.description || !args.payload) {
@@ -305,6 +307,7 @@ export const scheduleReminderTool = tool({
       payload: args.payload,
       agent: "opencode",
       model: args.model,
+      timeoutMs: args.timeoutMs,
       createdAt: new Date().toISOString(),
     };
 
@@ -325,6 +328,7 @@ export const scheduleOnceTool = tool({
     description: tool.schema.string().describe("What this reminder is for"),
     payload: tool.schema.string().describe("Message to process when reminder fires"),
     model: tool.schema.string().optional().describe("Model to use for this reminder (see macrodata-models in context for available options)"),
+    timeoutMs: tool.schema.number().optional().describe("Max runtime in ms for the agent run this reminder spawns (default 10 minutes)"),
   },
   async execute(args) {
     if (!args.id || !args.datetime || !args.description || !args.payload) {
@@ -339,6 +343,7 @@ export const scheduleOnceTool = tool({
       payload: args.payload,
       agent: "opencode",
       model: args.model,
+      timeoutMs: args.timeoutMs,
       createdAt: new Date().toISOString(),
     };
 

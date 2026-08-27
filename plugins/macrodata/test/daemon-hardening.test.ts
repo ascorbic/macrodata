@@ -159,6 +159,45 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
     expect(log).not.toContain("Shutting down");
   }, 30_000);
 
+  test("per-schedule timeoutMs overrides the global child timeout", async () => {
+    const fakeBinDir = join(ctx.root, "fake-bin");
+    mkdirSync(fakeBinDir, { recursive: true });
+    const fakeOpencode = join(fakeBinDir, "opencode");
+    writeFileSync(fakeOpencode, "#!/bin/sh\nsleep 3600\n", { mode: 0o755 });
+
+    // Global timeout is long; only the schedule's own timeoutMs can kill the child quickly
+    daemonPid = await startDaemon(ctx, {
+      PATH: `${fakeBinDir}:${process.env.PATH}`,
+      MACRODATA_CHILD_TIMEOUT_MS: "3600000",
+    });
+    expect(daemonPid).not.toBeNull();
+
+    const fireAt = new Date(Date.now() + 1500).toISOString();
+    writeFileSync(
+      join(ctx.remindersDir, "per-schedule-timeout.json"),
+      JSON.stringify({
+        id: "per-schedule-timeout",
+        type: "once",
+        expression: fireAt,
+        description: "per-schedule timeout test",
+        payload: "test payload",
+        agent: "opencode",
+        timeoutMs: 2000,
+        createdAt: new Date().toISOString(),
+      })
+    );
+
+    const logFile = join(ctx.root, ".daemon.log");
+    const childKilled = await waitFor(() => {
+      if (!existsSync(logFile)) return false;
+      const log = readFileSync(logFile, "utf-8");
+      return log.includes("exceeded 2000ms timeout");
+    }, 20_000, 250);
+
+    expect(childKilled).toBe(true);
+    expect(isDaemonRunning(daemonPid as number)).toBe(true);
+  }, 30_000);
+
   test("keeps running after a child that exits with an error", async () => {
     const fakeBinDir = join(ctx.root, "fake-bin");
     mkdirSync(fakeBinDir, { recursive: true });

@@ -89,6 +89,7 @@ interface Schedule {
   payload: string;
   agent?: "opencode" | "claude"; // Which agent to trigger
   model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-6")
+  timeoutMs?: number; // Optional child timeout override for this schedule
   createdAt: string;
 }
 
@@ -98,7 +99,7 @@ interface Schedule {
 async function triggerAgent(
   agent: "opencode" | "claude" | undefined,
   message: string,
-  options: { model?: string; description?: string } = {}
+  options: { model?: string; description?: string; timeoutMs?: number } = {}
 ): Promise<boolean> {
   if (!agent) {
     log("No agent specified in schedule, skipping trigger");
@@ -127,7 +128,7 @@ ${message}`;
       
       log(`Triggering OpenCode: ${opencodePath} ${finalArgs.join(" ").substring(0, 50)}...`);
       
-      spawnSupervisedChild(opencodePath, finalArgs, "opencode");
+      spawnSupervisedChild(opencodePath, finalArgs, "opencode", options.timeoutMs);
 
       return true;
     } else if (agent === "claude") {
@@ -136,7 +137,7 @@ ${message}`;
       
       log(`Triggering Claude Code: claude --print "..."`);
       
-      spawnSupervisedChild("claude", args, "claude");
+      spawnSupervisedChild("claude", args, "claude", options.timeoutMs);
 
       return true;
     }
@@ -152,7 +153,12 @@ ${message}`;
  * wedge the daemon's scheduling (#25). The child runs in its own process
  * group; on timeout the whole group is killed and the daemon keeps running.
  */
-function spawnSupervisedChild(command: string, args: string[], label: string) {
+function spawnSupervisedChild(
+  command: string,
+  args: string[],
+  label: string,
+  timeoutMs: number = CHILD_TIMEOUT_MS
+) {
   const proc = spawn(command, args, {
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
@@ -162,7 +168,7 @@ function spawnSupervisedChild(command: string, args: string[], label: string) {
   proc.unref();
 
   const killTimer = setTimeout(() => {
-    log(`[${label}] child exceeded ${CHILD_TIMEOUT_MS}ms timeout, killing process group ${proc.pid}`);
+    log(`[${label}] child exceeded ${timeoutMs}ms timeout, killing process group ${proc.pid}`);
     if (proc.pid) {
       try {
         process.kill(-proc.pid, "SIGKILL");
@@ -174,7 +180,7 @@ function spawnSupervisedChild(command: string, args: string[], label: string) {
         }
       }
     }
-  }, CHILD_TIMEOUT_MS);
+  }, timeoutMs);
   killTimer.unref();
 
   proc.stdout?.on("data", (data) => {
@@ -529,6 +535,7 @@ class MacrodataLocalDaemon {
     const triggered = await triggerAgent(schedule.agent, schedule.payload, {
       model: schedule.model,
       description: schedule.description,
+      timeoutMs: schedule.timeoutMs,
     });
 
     if (triggered) {

@@ -47,31 +47,43 @@ function signalDaemonReload(): void {
   }
 }
 
+const HEARTBEAT_STALE_MS = 15 * 60_000;
+
 /**
- * Ensure the macrodata daemon is running
- * Checks PID file, starts daemon if not running
+ * Ensure the macrodata daemon is running and healthy.
+ * Starts it when the PID is dead, and restarts it when the PID is alive but
+ * the heartbeat file is stale (wedged daemon, see #25).
  */
 function ensureDaemonRunning(): void {
-  const pidFile = join(homedir(), ".config", "macrodata", ".daemon.pid");
+  const configDir = join(homedir(), ".config", "macrodata");
+  const pidFile = join(configDir, ".daemon.pid");
   const stateRoot = getStateRoot();
+  const heartbeatFile = join(stateRoot, ".daemon.heartbeat");
   const daemonScript = join(import.meta.dirname, "..", "bin", "macrodata-daemon.ts");
-  
-  // Check if daemon is already running
+
   if (existsSync(pidFile)) {
     try {
       const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
       if (isProcessRunning(pid)) {
-        return; // Daemon is running
+        if (!isHeartbeatStale(heartbeatFile)) {
+          return;
+        }
+        logger.warn(`Daemon PID ${pid} alive but heartbeat stale, restarting`);
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone
+        }
       }
     } catch {
       // Invalid PID file, continue to start daemon
     }
   }
-  
+
   // Start daemon - it writes its own PID file
   try {
     // Ensure config dir exists for PID file
-    mkdirSync(join(homedir(), ".config", "macrodata"), { recursive: true });
+    mkdirSync(configDir, { recursive: true });
     
     const logFile = join(getStateRoot(), ".daemon.log");
     const out = openSync(logFile, "a");
@@ -85,6 +97,18 @@ function ensureDaemonRunning(): void {
     child.unref();
   } catch (err) {
     logger.error(`Failed to start daemon: ${String(err)}`);
+  }
+}
+
+function isHeartbeatStale(heartbeatFile: string): boolean {
+  if (!existsSync(heartbeatFile)) {
+    return false;
+  }
+  try {
+    const lastBeat = parseInt(readFileSync(heartbeatFile, "utf-8").trim(), 10);
+    return Number.isFinite(lastBeat) && Date.now() - lastBeat > HEARTBEAT_STALE_MS;
+  } catch {
+    return false;
   }
 }
 

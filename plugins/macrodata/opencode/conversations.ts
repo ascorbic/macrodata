@@ -20,7 +20,8 @@ import { pipeline, type FeatureExtractionPipeline } from "@xenova/transformers";
 import { getStateRoot } from "./context.js";
 import { logger } from "./logger.js";
 
-const OPENCODE_DB_PATH = join(homedir(), ".local", "share", "opencode", "opencode.db");
+const OPENCODE_DB_PATH =
+  process.env.MACRODATA_OPENCODE_DB_PATH || join(homedir(), ".local", "share", "opencode", "opencode.db");
 const EMBEDDING_DIMENSIONS = 384;
 
 // Reuse embedding pipeline from search.ts
@@ -148,8 +149,10 @@ interface ExchangeRow {
  * 4. Joins to project for worktree path
  * 5. Excludes subtask sessions (parent_id IS NULL)
  */
-function queryExchanges(db: Database, sinceMs?: number): ExchangeRow[] {
-  const whereClause = sinceMs ? "AND um.time_created > ?" : "";
+export function queryExchanges(db: Database, sinceMs?: number): ExchangeRow[] {
+  // Interpolated inside the user_messages CTE body, where only `m` and `s`
+  // are in scope (`um` is the outer query's alias and must not be used here).
+  const whereClause = sinceMs ? "AND m.time_created > ?" : "";
   const params = sinceMs ? [sinceMs] : [];
 
   // Get user-assistant pairs with their text content.
@@ -214,8 +217,11 @@ function queryExchanges(db: Database, sinceMs?: number): ExchangeRow[] {
   try {
     return db.prepare(sql).all(...params) as ExchangeRow[];
   } catch (err) {
+    // Propagate instead of returning [] so callers can't mistake a schema
+    // mismatch for "no new exchanges" (a silent no-op that previously
+    // disabled indexing for weeks, see #25).
     logger.error(`Query failed: ${err}`);
-    return [];
+    throw err;
   }
 }
 

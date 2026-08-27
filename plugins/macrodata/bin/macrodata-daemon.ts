@@ -69,6 +69,18 @@ function getPendingContext() {
   return join(getStateRoot(), ".pending-context");
 }
 
+function getHeartbeatFile() {
+  return join(getDaemonDir(), ".daemon.heartbeat");
+}
+
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
+const CHILD_TIMEOUT_MS = (() => {
+  const raw = process.env.MACRODATA_CHILD_TIMEOUT_MS;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 60_000;
+})();
+
 interface Schedule {
   id: string;
   type: "cron" | "once";
@@ -115,21 +127,7 @@ ${message}`;
       
       log(`Triggering OpenCode: ${opencodePath} ${finalArgs.join(" ").substring(0, 50)}...`);
       
-      const proc = spawn(opencodePath, finalArgs, {
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-        env: { ...process.env, PATH: process.env.PATH },
-      });
-
-      proc.unref();
-
-      // Log output for debugging
-      proc.stdout?.on("data", (data) => {
-        log(`[opencode stdout] ${data.toString().trim()}`);
-      });
-      proc.stderr?.on("data", (data) => {
-        log(`[opencode stderr] ${data.toString().trim()}`);
-      });
+      spawnSupervisedChild(opencodePath, finalArgs, "opencode");
 
       return true;
     } else if (agent === "claude") {
@@ -138,12 +136,7 @@ ${message}`;
       
       log(`Triggering Claude Code: claude --print "..."`);
       
-      const proc = spawn("claude", args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
-
-      proc.unref();
+      spawnSupervisedChild("claude", args, "claude");
 
       return true;
     }
@@ -152,6 +145,52 @@ ${message}`;
   }
 
   return false;
+}
+
+/**
+ * Spawn an agent child process with a hard timeout so a hung child can never
+ * wedge the daemon's scheduling (#25). The child runs in its own process
+ * group; on timeout the whole group is killed and the daemon keeps running.
+ */
+function spawnSupervisedChild(command: string, args: string[], label: string) {
+  const proc = spawn(command, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+    env: { ...process.env, PATH: process.env.PATH },
+  });
+
+  proc.unref();
+
+  const killTimer = setTimeout(() => {
+    log(`[${label}] child exceeded ${CHILD_TIMEOUT_MS}ms timeout, killing process group ${proc.pid}`);
+    if (proc.pid) {
+      try {
+        process.kill(-proc.pid, "SIGKILL");
+      } catch {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // Child already gone
+        }
+      }
+    }
+  }, CHILD_TIMEOUT_MS);
+  killTimer.unref();
+
+  proc.stdout?.on("data", (data) => {
+    log(`[${label} stdout] ${data.toString().trim()}`);
+  });
+  proc.stderr?.on("data", (data) => {
+    log(`[${label} stderr] ${data.toString().trim()}`);
+  });
+  proc.on("error", (err) => {
+    clearTimeout(killTimer);
+    logError(`[${label}] child process error: ${String(err)}`);
+  });
+  proc.on("exit", (code, signal) => {
+    clearTimeout(killTimer);
+    log(`[${label}] child exited (code=${code}, signal=${signal})`);
+  });
 }
 
 function log(message: string) {
@@ -259,6 +298,7 @@ class MacrodataLocalDaemon {
   private cronJobs: Map<string, Cron> = new Map();
   private watcher: ReturnType<typeof watch> | null = null;
   private schedulesWatcher: ReturnType<typeof watch> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private shouldRun = true;
 
   async start() {
@@ -275,9 +315,18 @@ class MacrodataLocalDaemon {
     }
 
     // Set up signal handlers
-    process.on("SIGTERM", () => this.shutdown());
-    process.on("SIGINT", () => this.shutdown());
+    process.on("SIGTERM", () => this.shutdown("SIGTERM"));
+    process.on("SIGINT", () => this.shutdown("SIGINT"));
     process.on("SIGHUP", () => this.reload());
+
+    // The daemon must be hard to stop: a failed child, watcher error, or
+    // rejected background promise should be logged, never fatal (#25).
+    process.on("unhandledRejection", (reason) => {
+      logError(`Unhandled rejection (daemon continues): ${String(reason)}`);
+    });
+    process.on("uncaughtException", (err) => {
+      logError(`Uncaught exception (daemon continues): ${String(err?.stack || err)}`);
+    });
 
     // Preload embedding model and update conversation indexes in background
     preloadModel()
@@ -297,8 +346,23 @@ class MacrodataLocalDaemon {
     // Start file watcher for entity changes
     this.startFileWatcher();
 
+    // Heartbeat lets the plugin detect a dead/stale daemon and restart it
+    this.startHeartbeat();
+
     // Keep process alive
     log("Daemon running");
+  }
+
+  private startHeartbeat() {
+    const beat = () => {
+      try {
+        writeFileSync(getHeartbeatFile(), Date.now().toString());
+      } catch (err) {
+        logError(`Heartbeat write failed: ${String(err)}`);
+      }
+    };
+    beat();
+    this.heartbeatTimer = setInterval(beat, HEARTBEAT_INTERVAL_MS);
   }
 
   private acquirePidFile(pidFile: string): boolean {
@@ -637,9 +701,14 @@ class MacrodataLocalDaemon {
     log("Reload complete");
   }
 
-  private shutdown() {
-    log("Shutting down");
+  private shutdown(signal: string) {
+    log(`Shutting down (${signal})`);
     this.shouldRun = false;
+
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
 
     // Stop all cron jobs
     for (const [_id, job] of this.cronJobs) {

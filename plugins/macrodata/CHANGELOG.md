@@ -1,5 +1,19 @@
 # @macrodata/opencode
 
+## 0.3.1
+
+### Patch Changes
+
+- [#34](https://github.com/ascorbic/macrodata/pull/34) [`46d7728`](https://github.com/ascorbic/macrodata/commit/46d7728188f7ed16b456825fdd9d64b59805f1b6) Thanks [@vinayakkulkarni](https://github.com/vinayakkulkarni)! - Fix two bugs that silently disabled the plugin for weeks (#25):
+
+  **Incremental conversation indexing was broken.** The `sinceMs` time filter in `queryExchanges` referenced `um.time_created`, but the filter is interpolated inside the `user_messages` CTE where only the `m` alias is in scope, so every incremental re-index threw `SQLiteError: no such column: um.time_created`. The filter now uses `m.time_created`. Query errors also propagate instead of being swallowed into an empty result, so a schema mismatch can no longer masquerade as "0 new exchanges" indefinitely.
+
+  **A hung agent child could wedge the daemon forever.** Scheduled `opencode run` / `claude --print` children are now supervised with a hard timeout (default 10 minutes, configurable via `MACRODATA_CHILD_TIMEOUT_MS`, or per schedule via `timeoutMs`); on timeout the child's process group is killed and the daemon keeps running. The daemon also installs `unhandledRejection` / `uncaughtException` handlers that log and continue instead of dying, and writes a `.daemon.heartbeat` file every minute. The plugin's `ensureDaemonRunning` now detects a PID-alive-but-heartbeat-stale daemon and restarts it, so a wedged daemon self-heals on the next OpenCode session instead of staying dead for days.
+
+- [#32](https://github.com/ascorbic/macrodata/pull/32) [`ee80b99`](https://github.com/ascorbic/macrodata/commit/ee80b99413099f94c5f9b0b14c4f6dcc3a14aadd) Thanks [@ascorbic](https://github.com/ascorbic)! - Genericize personal references in shipped content. The onboarding example dialogue and the conversation-path decoder comment used the maintainer's name and username; they now use a placeholder name and a neutral example path. Author/repository metadata is unchanged.
+
+- [#37](https://github.com/ascorbic/macrodata/pull/37) [`6a4a42a`](https://github.com/ascorbic/macrodata/commit/6a4a42a0f1a748d675fd3ce1088ce3512dde78b9) Thanks [@ascorbic](https://github.com/ascorbic)! - Make OpenCode context injection prompt-cache friendly. The system prompt transform previously re-read state files on every request and included volatile sections (recent journal, schedules, pending daemon context), so any mid-session change — including the agent's own journal writes — changed the system prompt and invalidated the provider's cached prefix for the rest of the session. The memory context is now frozen per session, and mid-session changes reach the model as system-reminder parts on the incoming user message: daemon deltas, plus any memory context sections that changed since the session snapshot (delivered once, as full section replacements). Journal dates are formatted as ISO dates instead of locale-dependent strings. Also updates @opencode-ai/plugin and @opencode-ai/sdk from 1.1.x to 1.17.x.
+
 ## 0.3.0
 
 ### Minor Changes

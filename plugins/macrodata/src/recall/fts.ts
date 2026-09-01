@@ -25,12 +25,20 @@ import { rankContext } from "./models.ts";
 // recall dying silently in the long-lived worker with nothing in the logs.
 // Out-of-range values keep the default and squeak per read (squeaky-gate: a
 // misconfiguration should announce itself until fixed, not degrade quietly).
-export function envNum(name: string, fallback: number, min: number): number {
+export function envNum(name: string, fallback: number, min: number, max = Infinity): number {
   const raw = process.env[name];
   if (raw == null || raw === "") return fallback;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < min) {
-    console.warn(`[fts] ${name}="${raw}" invalid (need a finite number >= ${min}); using ${fallback}`);
+  // A ceiling matters for the same reason the floor does: these knobs feed
+  // setTimeout and unbounded allocations, where an absurd value fails in a way
+  // that looks nothing like a bad setting — a timer that overflows fires
+  // immediately, a pool of a million candidates reranks until the deadline. An
+  // out-of-range value is rejected rather than clamped so the warn names the
+  // real setting instead of silently running something the operator never asked
+  // for.
+  if (!Number.isFinite(n) || n < min || n > max) {
+    const range = max === Infinity ? `>= ${min}` : `between ${min} and ${max}`;
+    console.warn(`[fts] ${name}="${raw}" invalid (need a finite number ${range}); using ${fallback}`);
     return fallback;
   }
   return n;
@@ -382,7 +390,20 @@ export async function pipelineSearch(
   // per-stage diagnostics (rrf recall score, recency factor) through UNCHANGED so
   // the hook + calibration log can show each stage instead of conflating into the
   // final. Stamp effective last_accessed so the age label shows the real age.
-  const scores = await rerank(rerankQuery || query, candidates.map((c) => c.item.content));
+  let scores: number[];
+  try {
+    scores = await rerank(rerankQuery || query, candidates.map((c) => c.item.content));
+  } catch (e) {
+    // The two recall legs above degrade into each other; this stage has nothing
+    // to degrade to. `floor` and the final ordering are both defined in terms of
+    // the cross-encoder's score, and the fused RRF rank is not on that scale, so
+    // substituting it would publish hits under a number that means something
+    // else — into the calibration log, whose whole purpose is comparing those
+    // numbers across runs. Recall is best-effort; returning nothing is a cost
+    // the caller already handles.
+    console.warn(`[fts] rerank failed, returning no hits: ${String(e)}`);
+    return [];
+  }
   return candidates
     .map((c, i) => ({ ...c.item, score: scores[i], rrf: c.rrf, recency: c.rec, wRank: c.wRank, mmrPick: c.mmr?.pick, mmrSim: c.mmr?.maxSim, timestamp: lastAccessed(c.item) }))
     .filter((c) => c.score >= floor)

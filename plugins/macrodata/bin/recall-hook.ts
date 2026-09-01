@@ -158,6 +158,7 @@ async function main(): Promise<void> {
     if (!injectedFile) return;
     try {
       const now = new Date().toISOString();
+      const loaded = loadInjected();
       // Prune pre-window + ts-less entries (ineligible) — PRIMARY growth bound. Lexical
       // ISO compare: both ts are canonical `…Z`+ms (toISOString), so lexical==chronological;
       // a format mismatch fails toward DROPPING (under-cull), never echo. cap(1000) is a
@@ -165,7 +166,11 @@ async function main(): Promise<void> {
       // echo (under-cull-safe). atomicWrite publishes whole files only; note a
       // concurrent fire's read-modify-write can still lose entries last-writer-
       // wins (under-cull-safe, tracked with the mailbox-robustness work).
-      const kept = loadInjected().filter((e) => e.ts && (!windowStartTs || e.ts >= windowStartTs));
+      const kept = loaded.filter((e) => e.ts && (!windowStartTs || e.ts >= windowStartTs));
+      // Nothing to add and nothing pruned means the file already says this.
+      // Called on every fire, so writing unconditionally would rewrite it once
+      // per prompt for the life of a session that injects nothing.
+      if (chunks.length === 0 && kept.length === loaded.length) return;
       for (const h of chunks) kept.push({ c: h.content, ts: now });
       atomicWrite(injectedFile, JSON.stringify(kept.slice(-1000)));
     } catch {}
@@ -397,6 +402,12 @@ async function main(): Promise<void> {
       try { atomicWrite(getRequestPath(sid),
         JSON.stringify({ sid, search, rerankQuery, ts: new Date().toISOString() })); } catch {}
     }
+    // Outside the ready check: the prune above is the growth bound, and a fire
+    // that injects nothing is exactly the fire that has entries to drop — a
+    // compaction moves the window without producing a hit, and pruning only when
+    // something is added means the file keeps every pre-window entry until the
+    // next injection, which may be many prompts away or never.
+    persistInjected(ready);
     if (ready.length > 0) {
       // Span: when the served query was enqueued → when the worker served it.
       // offPath = the rerank cost the tool call NEVER paid; fast = what this
@@ -415,7 +426,6 @@ async function main(): Promise<void> {
         { mode: "async", offPathMs: offPath, queryToServeMs: span, fastMs, drained, filteredInContext, filteredSrc, floorDropped, excludeSize: excludeSet.size, drainError },
         { search: meta.servedSearch, rerankQuery: meta.servedRerankQuery },
       );
-      persistInjected(ready);
       emitHits(ready, tag);
     }
     // Nothing to inject this fire, but we enqueued the current context for the

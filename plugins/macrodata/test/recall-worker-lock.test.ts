@@ -13,7 +13,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { spawn, spawnSync, type ChildProcess } from "child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, utimesSync } from "fs";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -128,6 +128,76 @@ describe("recall worker single-instance claim", () => {
 
     expect(await waitFor(() => readPidFile() === String(w.pid))).toBe(true);
     expect(gone(w)).toBe(false);
+  }, 30000);
+
+  // Only `request-` files are consumed by the protocol; an inbox nobody drained
+  // and the two per-session baselines are left behind by every session that ends,
+  // forever, and the worker's 5s sweep reads the whole directory each time.
+  test("sweeps mailbox files left by sessions that have ended, and keeps live ones", async () => {
+    const mailbox = join(root, ".recall", "mailbox");
+    mkdirSync(mailbox, { recursive: true });
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    const orphans = ["inbox-gone.json", "exclude-gone.json", "injected-gone.json", "request-gone.json.1234.tmp"];
+    for (const f of orphans) {
+      writeFileSync(join(mailbox, f), "{}");
+      utimesSync(join(mailbox, f), old, old);
+    }
+    // A live session's file: same name shape, current mtime. The hook rewrites
+    // its baselines on every fire, so mtime is the whole difference between a
+    // session that ended and one still going.
+    writeFileSync(join(mailbox, "inbox-live.json"), "{}");
+
+    startWorker();
+
+    expect(await waitFor(() => orphans.every((f) => !existsSync(join(mailbox, f))))).toBe(true);
+    expect(existsSync(join(mailbox, "inbox-live.json"))).toBe(true);
+  }, 30000);
+
+  /** Quarantined requests, whose names carry a timestamp to stay distinct. */
+  const quarantinesIn = (mailbox: string) =>
+    readdirSync(mailbox).filter((f) => f.startsWith("request-") && f.endsWith(".bad"));
+
+  // Nothing else consumes a request file, so one the worker cannot parse is found
+  // again by every 5s sweep for the life of the process — and the only trim on
+  // worker.log runs on the spawn path, which a healthy worker never reaches.
+  test("quarantines a request file it cannot parse instead of re-reading it forever", async () => {
+    const mailbox = join(root, ".recall", "mailbox");
+    mkdirSync(mailbox, { recursive: true });
+    const bad = join(mailbox, "request-abc.json");
+    writeFileSync(bad, '{"search": "truncated mid-w');
+
+    startWorker();
+
+    expect(await waitFor(() => quarantinesIn(mailbox).length === 1)).toBe(true);
+    expect(existsSync(bad)).toBe(false);
+  }, 30000);
+
+  // The name a quarantine lands under carries a timestamp because the request
+  // name does not identify the content: the hook reuses `request-<sid>.json` for
+  // every prompt in a session, so a fixed `.bad` destination means the second
+  // unparseable request of a session silently overwrites the first — and a
+  // quarantine exists to be read afterwards.
+  test("keeps each quarantined request rather than overwriting the last", async () => {
+    const mailbox = join(root, ".recall", "mailbox");
+    mkdirSync(mailbox, { recursive: true });
+    const bad = join(mailbox, "request-abc.json");
+
+    writeFileSync(bad, '{"search": "first truncated mid-w');
+    startWorker();
+    expect(await waitFor(() => quarantinesIn(mailbox).length === 1)).toBe(true);
+
+    writeFileSync(bad, '{"search": "second truncated mid-w');
+    expect(await waitFor(() => quarantinesIn(mailbox).length === 2)).toBe(true);
+
+    // Both bodies still readable is the property; two distinct names is only how
+    // it is achieved.
+    const bodies = quarantinesIn(mailbox)
+      .map((f) => readFileSync(join(mailbox, f), "utf-8"))
+      .sort();
+    expect(bodies).toEqual([
+      '{"search": "first truncated mid-w',
+      '{"search": "second truncated mid-w',
+    ]);
   }, 30000);
 
   test("SIGTERM releases the claim", async () => {

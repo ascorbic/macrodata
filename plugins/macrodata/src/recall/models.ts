@@ -91,10 +91,26 @@ async function disposeBounded(model: { dispose(): Promise<void> }, label: string
   clearTimeout(timer);
 }
 
+// The first search in a process pays for a possible multi-GB HF download plus
+// two model loads; every later one runs against weights already in memory. That
+// gap is minutes wide, so callers that time-box a search need to know which one
+// they are about to do — and they cannot infer it from results, because a search
+// that returns nothing looks the same whether the models loaded or never did.
+// Set beside the memoized loads, which run at most once each.
+let embedLoaded = false;
+let rankLoaded = false;
+
+/** Whether both model loads have completed in this process. */
+export function modelsLoaded(): boolean {
+  return embedLoaded && rankLoaded;
+}
+
 async function loadEmbed() {
   const model = await (await llama()).loadModel({ modelPath: await resolveModelFile(EMBED_URI) });
   try {
-    return await model.createEmbeddingContext({ contextSize: 4096 });
+    const ctx = await model.createEmbeddingContext({ contextSize: 4096 });
+    embedLoaded = true;
+    return ctx;
   } catch (e) {
     await disposeBounded(model, "embed");
     throw e;
@@ -105,7 +121,9 @@ export const embedContext = memoAsync(breaker(loadEmbed, "embed"));
 async function loadRank() {
   const model = await (await llama()).loadModel({ modelPath: await resolveModelFile(RERANK_URI) });
   try {
-    return await model.createRankingContext({ contextSize: 4096 });
+    const ctx = await model.createRankingContext({ contextSize: 4096 });
+    rankLoaded = true;
+    return ctx;
   } catch (e) {
     await disposeBounded(model, "rerank");
     throw e;

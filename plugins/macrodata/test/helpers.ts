@@ -5,7 +5,7 @@
  */
 
 import { execSync, spawnSync } from "child_process";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, realpathSync, rmSync, mkdirSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 
@@ -35,8 +35,13 @@ export interface TestContext {
  * Call cleanup() when done to remove the temp directory and restore env.
  */
 export function createTestContext(prefix = "macrodata-test-"): TestContext {
-  // Create temp directory
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  // Resolved, because the root is an identity and not only a path: the hook puts
+  // it in the worker's argv and finds that worker again by string comparison, and
+  // both resolvers canonicalize before doing so. On macOS the temp dir arrives
+  // under /var, a symlink to /private/var, so an unresolved root here spells the
+  // worker one way and searches for it the other — a worker that starts fine and
+  // is invisible to every assertion about it.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 
   // Create directory structure
   const stateDir = join(root, "state");

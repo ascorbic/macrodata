@@ -69,6 +69,18 @@ export function getWorkerPidPath(): string {
   return join(getRecallDir(), "worker.pid");
 }
 
+/**
+ * Where macrodata-hook.sh records each worker start it could not later find.
+ *
+ * The worker clears it once it holds the slot, which is what makes the file a
+ * count of FAILED starts rather than of starts: a start that leaves a worker
+ * running erases its own line, so anything left is a start that produced
+ * nothing, and the hook reports a broken install off the length.
+ */
+export function getSpawnStampPath(): string {
+  return join(getRecallDir(), "last-spawn");
+}
+
 export function getCalibrationLog(): string {
   return join(getRecallDir(), "calibration.jsonl");
 }

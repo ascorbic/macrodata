@@ -23,6 +23,13 @@ const after = <T>(ms: number, value: T) => new Promise<T>((r) => setTimeout(() =
  * The work promise must be built BEFORE this is entered — a timer created by the
  * work itself is indistinguishable here from the deadline's own, and would read
  * as a leak forever.
+ *
+ * Only clears of ids this ledger handed out are recorded. The patch is global and
+ * the whole suite shares one process, so an unrelated `clearTimeout` — another
+ * file's teardown settling after its own test finished — otherwise lands in this
+ * window and reads as a clear the deadline never made. A double clear and a
+ * missing clear both still show, since either one changes `cleared` against
+ * `created`.
  */
 async function withTimerLedger<T>(fn: () => Promise<T>) {
   const realSet = globalThis.setTimeout;
@@ -35,7 +42,7 @@ async function withTimerLedger<T>(fn: () => Promise<T>) {
     return id;
   }) as typeof realSet;
   globalThis.clearTimeout = ((id: Parameters<typeof realClear>[0]) => {
-    cleared.push(id);
+    if (created.includes(id)) cleared.push(id);
     return realClear(id);
   }) as typeof realClear;
   try {
@@ -102,6 +109,24 @@ describe("withDeadline", () => {
       const { created, cleared } = await withTimerLedger(() =>
         withDeadline(work, 1000).catch(() => "caught"),
       );
+      expect(created.length).toBe(1);
+      expect(cleared).toEqual(created);
+    });
+
+    // A clear from anywhere else in the process reaches the same global patch.
+    // Counting one as the deadline's own turns an unrelated timer's teardown into
+    // a leak this file reports against `withDeadline`, which is a red build no
+    // amount of reading `withDeadline` explains.
+    test("counting only the timers it handed out", async () => {
+      const work = after(5, "hits");
+      const foreign = setTimeout(() => {}, 10_000);
+      const { result, created, cleared } = await withTimerLedger(() => {
+        const raced = withDeadline(work, 1000);
+        clearTimeout(undefined);
+        clearTimeout(foreign);
+        return raced;
+      });
+      expect(result).toBe("hits");
       expect(created.length).toBe(1);
       expect(cleared).toEqual(created);
     });

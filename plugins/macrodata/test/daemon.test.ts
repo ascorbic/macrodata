@@ -37,7 +37,8 @@ const DAEMON_SCRIPT = join(dirname(import.meta.dir), "bin", "macrodata-daemon.ts
 async function startDaemon(ctx: TestContext): Promise<number | null> {
   return new Promise((resolve) => {
     const proc = spawn("bun", ["run", DAEMON_SCRIPT], {
-      env: { ...process.env, MACRODATA_ROOT: ctx.root },
+      // Conversation indexing reads ~/.claude; a real one starves the daemon's schedule timers
+      env: { ...process.env, HOME: ctx.root, MACRODATA_ROOT: ctx.root },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });

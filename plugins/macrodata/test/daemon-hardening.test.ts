@@ -30,6 +30,8 @@ async function startDaemon(ctx: TestContext, env: Record<string, string> = {}): 
     const proc = spawn("bun", ["run", DAEMON_SCRIPT], {
       env: {
         ...process.env,
+        // Conversation indexing reads ~/.claude; a real one starves the daemon's schedule timers
+        HOME: ctx.root,
         MACRODATA_ROOT: ctx.root,
         MACRODATA_OPENCODE_DB_PATH: join(ctx.root, "nonexistent-opencode.db"),
         ...env,
@@ -229,6 +231,47 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
     expect(log).toContain("exceeded 2000ms timeout");
     expect(isDaemonRunning(daemonPid as number)).toBe(true);
   }, 30_000);
+
+  test.skipIf(process.platform !== "darwin")(
+    "holds a caffeinate assertion for the lifetime of an agent child",
+    async () => {
+      const fakeBinDir = join(ctx.root, "fake-bin");
+      mkdirSync(fakeBinDir, { recursive: true });
+      const childPidFile = join(ctx.root, "child.pid");
+      const caffeinateArgsFile = join(ctx.root, "caffeinate.args");
+      writeFileSync(join(fakeBinDir, "opencode"), `#!/bin/sh\necho $$ > "${childPidFile}"\nsleep 2\n`, {
+        mode: 0o755,
+      });
+      writeFileSync(join(fakeBinDir, "caffeinate"), `#!/bin/sh\necho "$@" > "${caffeinateArgsFile}"\n`, {
+        mode: 0o755,
+      });
+
+      daemonPid = await startDaemon(ctx, { PATH: `${fakeBinDir}:${process.env.PATH}` });
+      expect(daemonPid).not.toBeNull();
+
+      await waitForDaemonIdle(ctx);
+
+      const fireAt = new Date(Date.now() + 1500).toISOString();
+      writeFileSync(
+        join(ctx.remindersDir, "caffeinate-test.json"),
+        JSON.stringify({
+          id: "caffeinate-test",
+          type: "once",
+          expression: fireAt,
+          description: "caffeinate test",
+          payload: "test payload",
+          agent: "opencode",
+          createdAt: new Date().toISOString(),
+        })
+      );
+
+      await waitFor(() => existsSync(caffeinateArgsFile) && existsSync(childPidFile), 20_000, 250);
+
+      const childPid = readFileSync(childPidFile, "utf-8").trim();
+      expect(readFileSync(caffeinateArgsFile, "utf-8").trim()).toBe(`-is -w ${childPid}`);
+    },
+    30_000
+  );
 
   test("keeps running after a child that exits with an error", async () => {
     const fakeBinDir = join(ctx.root, "fake-bin");

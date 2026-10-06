@@ -167,6 +167,10 @@ function spawnSupervisedChild(
 
   proc.unref();
 
+  if (process.platform === "darwin" && proc.pid) {
+    holdSleepAssertion(proc.pid, label);
+  }
+
   const killTimer = setTimeout(() => {
     log(`[${label}] child exceeded ${timeoutMs}ms timeout, killing process group ${proc.pid}`);
     if (proc.pid) {
@@ -197,6 +201,23 @@ function spawnSupervisedChild(
     clearTimeout(killTimer);
     log(`[${label}] child exited (code=${code}, signal=${signal})`);
   });
+}
+
+/**
+ * Keep the Mac awake until the child exits. Without this, a run that fires
+ * while the machine is asleep only advances during brief maintenance wakes
+ * and hits the wall-clock timeout long before finishing. `-s` has no effect
+ * on battery, and nothing prevents clamshell sleep on battery.
+ */
+function holdSleepAssertion(pid: number, label: string) {
+  const caffeinate = spawn("caffeinate", ["-is", "-w", String(pid)], {
+    stdio: "ignore",
+    detached: true,
+  });
+  caffeinate.on("error", (err) => {
+    logError(`[${label}] could not start caffeinate: ${String(err)}`);
+  });
+  caffeinate.unref();
 }
 
 function log(message: string) {

@@ -20,6 +20,7 @@ import { Cron } from "croner";
 import { spawn, execSync } from "child_process";
 import { indexEntityFile, preloadModel } from "../src/indexer.js";
 import { getStateRoot, getEntitiesDir, getJournalDir, getIndexDir, getRemindersDir } from "../src/config.js";
+import { parseSessionLimitReset } from "../src/session-limit.js";
 import { updateConversationIndex as updateOpenCodeConversations } from "../opencode/conversations.js";
 import { updateConversationIndex as updateClaudeCodeConversations } from "../src/conversations.js";
 
@@ -75,6 +76,9 @@ function getHeartbeatFile() {
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 
+// Wait past the minute the limit message names before retrying
+const SESSION_LIMIT_RETRY_MARGIN_MS = 60_000;
+
 const CHILD_TIMEOUT_MS = (() => {
   const raw = process.env.MACRODATA_CHILD_TIMEOUT_MS;
   const parsed = raw ? parseInt(raw, 10) : NaN;
@@ -99,7 +103,7 @@ interface Schedule {
 async function triggerAgent(
   agent: "opencode" | "claude" | undefined,
   message: string,
-  options: { model?: string; description?: string; timeoutMs?: number } = {}
+  options: { model?: string; description?: string; timeoutMs?: number; retryAfterLimit?: boolean } = {}
 ): Promise<boolean> {
   if (!agent) {
     log("No agent specified in schedule, skipping trigger");
@@ -137,7 +141,17 @@ ${message}`;
       
       log(`Triggering Claude Code: claude --print "..."`);
       
-      spawnSupervisedChild("claude", args, "claude", options.timeoutMs);
+      spawnSupervisedChild("claude", args, "claude", options.timeoutMs, (code, output) => {
+        if (code === 0 || options.retryAfterLimit === false) return;
+        const resetAt = parseSessionLimitReset(output);
+        if (!resetAt) return;
+        const retryAt = new Date(resetAt.getTime() + SESSION_LIMIT_RETRY_MARGIN_MS);
+        log(`[claude] session limit hit; retrying "${options.description}" at ${retryAt.toISOString()}`);
+        const retryTimer = setTimeout(() => {
+          void triggerAgent(agent, message, { ...options, retryAfterLimit: false });
+        }, retryAt.getTime() - Date.now());
+        retryTimer.unref();
+      });
 
       return true;
     }
@@ -157,7 +171,8 @@ function spawnSupervisedChild(
   command: string,
   args: string[],
   label: string,
-  timeoutMs: number = CHILD_TIMEOUT_MS
+  timeoutMs: number = CHILD_TIMEOUT_MS,
+  onExit?: (code: number | null, output: string) => void
 ) {
   const proc = spawn(command, args, {
     stdio: ["ignore", "pipe", "pipe"],
@@ -183,8 +198,11 @@ function spawnSupervisedChild(
   }, timeoutMs);
   killTimer.unref();
 
+  let output = "";
   proc.stdout?.on("data", (data) => {
-    log(`[${label} stdout] ${data.toString().trim()}`);
+    const text = data.toString();
+    output = (output + text).slice(-4096);
+    log(`[${label} stdout] ${text.trim()}`);
   });
   proc.stderr?.on("data", (data) => {
     log(`[${label} stderr] ${data.toString().trim()}`);
@@ -196,6 +214,7 @@ function spawnSupervisedChild(
   proc.on("exit", (code, signal) => {
     clearTimeout(killTimer);
     log(`[${label}] child exited (code=${code}, signal=${signal})`);
+    onExit?.(code, output);
   });
 }
 

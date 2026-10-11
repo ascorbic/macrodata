@@ -265,4 +265,41 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
     expect(childExited).toBe(true);
     expect(isDaemonRunning(daemonPid as number)).toBe(true);
   }, 30_000);
+
+  test("passes a schedule's model to claude", async () => {
+    const fakeBinDir = join(ctx.root, "fake-bin");
+    mkdirSync(fakeBinDir, { recursive: true });
+    const fakeClaude = join(fakeBinDir, "claude");
+    const argsFile = join(ctx.root, "claude-args.txt");
+    writeFileSync(fakeClaude, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\n`, { mode: 0o755 });
+
+    daemonPid = await startDaemon(ctx, { PATH: `${fakeBinDir}:${process.env.PATH}` });
+    expect(daemonPid).not.toBeNull();
+
+    await waitForDaemonIdle(ctx);
+
+    // The reminders watcher can take a few seconds to see the file; a one-shot already past its time is dropped
+    const fireAt = new Date(Date.now() + 5000).toISOString();
+    writeFileSync(
+      join(ctx.remindersDir, "model-test.json"),
+      JSON.stringify({
+        id: "model-test",
+        type: "once",
+        expression: fireAt,
+        description: "model test",
+        payload: "test payload",
+        agent: "claude",
+        model: "sonnet",
+        createdAt: new Date().toISOString(),
+      })
+    );
+
+    const ran = await waitFor(() => existsSync(argsFile), 20_000, 250);
+    expect(ran).toBe(true);
+
+    const args = readFileSync(argsFile, "utf-8").split("\n");
+    expect(args[0]).toBe("--print");
+    expect(args.indexOf("--model")).toBeGreaterThan(0);
+    expect(args[args.indexOf("--model") + 1]).toBe("sonnet");
+  }, 30_000);
 });

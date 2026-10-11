@@ -265,4 +265,47 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
     expect(childExited).toBe(true);
     expect(isDaemonRunning(daemonPid as number)).toBe(true);
   }, 30_000);
+
+  test("retries a claude child that exits on the session limit once the window resets", async () => {
+    const fakeBinDir = join(ctx.root, "fake-bin");
+    mkdirSync(fakeBinDir, { recursive: true });
+    const fakeClaude = join(fakeBinDir, "claude");
+    writeFileSync(
+      fakeClaude,
+      "#!/bin/sh\necho \"You've hit your session limit · resets 2:30am (Europe/London)\"\nexit 1\n",
+      { mode: 0o755 }
+    );
+
+    daemonPid = await startDaemon(ctx, { PATH: `${fakeBinDir}:${process.env.PATH}` });
+    expect(daemonPid).not.toBeNull();
+
+    await waitForDaemonIdle(ctx);
+
+    const fireAt = new Date(Date.now() + 1500).toISOString();
+    writeFileSync(
+      join(ctx.remindersDir, "limit-test.json"),
+      JSON.stringify({
+        id: "limit-test",
+        type: "once",
+        expression: fireAt,
+        description: "limit test",
+        payload: "test payload",
+        agent: "claude",
+        createdAt: new Date().toISOString(),
+      })
+    );
+
+    const logFile = join(ctx.root, ".daemon.log");
+    const retryLogged = await waitFor(() => {
+      if (!existsSync(logFile)) return false;
+      return readFileSync(logFile, "utf-8").includes("session limit hit; retrying");
+    }, 20_000, 250);
+
+    expect(retryLogged).toBe(true);
+    const log = readFileSync(logFile, "utf-8");
+    const retryAt = /retrying "limit test" at (\S+)/.exec(log)?.[1];
+    expect(retryAt).toBeDefined();
+    expect(new Date(retryAt as string).getTime()).toBeGreaterThan(Date.now());
+    expect(isDaemonRunning(daemonPid as number)).toBe(true);
+  }, 30_000);
 });

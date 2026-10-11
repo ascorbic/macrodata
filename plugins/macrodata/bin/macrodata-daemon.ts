@@ -88,7 +88,7 @@ interface Schedule {
   description: string;
   payload: string;
   agent?: "opencode" | "claude"; // Which agent to trigger
-  model?: string; // Optional model override (e.g., "anthropic/claude-opus-4-6")
+  model?: string; // Optional model override (opencode: "anthropic/claude-opus-4-6"; claude: "sonnet" or a full model name)
   timeoutMs?: number; // Optional child timeout override for this schedule
   createdAt: string;
 }
@@ -134,6 +134,9 @@ ${message}`;
     } else if (agent === "claude") {
       // claude --print "message" or claude -p "message"
       const args = ["--print", fullMessage];
+      if (options.model) {
+        args.push("--model", options.model);
+      }
       
       log(`Triggering Claude Code: claude --print "..."`);
       

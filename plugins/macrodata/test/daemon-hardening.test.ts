@@ -281,7 +281,8 @@ describe.skipIf(!daemonAvailable)("daemon hardening", () => {
 
     await waitForDaemonIdle(ctx);
 
-    const fireAt = new Date(Date.now() + 1500).toISOString();
+    // The reminders watcher can take a few seconds to see the file; a one-shot already past its time is dropped
+    const fireAt = new Date(Date.now() + 5000).toISOString();
     writeFileSync(
       join(ctx.remindersDir, "limit-test.json"),
       JSON.stringify({

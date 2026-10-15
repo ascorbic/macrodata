@@ -7,6 +7,15 @@ description: Deep nightly reflection. Self-improvement, research, pattern recogn
 
 **FIRST, before any reads or research:** if you have not already banked a heartbeat journal entry (topic `dreamtime`) claiming this run, do it NOW, then re-read recent `dreamtime` journal entries. If a sibling banked an earlier heartbeat for tonight, stand down: contribute deltas via journal only, never state files. Scheduled runs can double-fire; the journal write claims, the re-read arbitrates.
 
+**Second, check power.** If both of these are true the machine sleeps for ~15 minutes between every tool batch and the run will not survive the night:
+
+```
+pmset -g batt | grep -q 'Battery Power'
+ioreg -r -k AppleClamshellState -d 4 | grep -q '"AppleClamshellState" = Yes'
+```
+
+Run in sliver mode: bank a journal datum with the live conditions (battery %, lid, daemon PID), do one substantive thing that fits in a single tool batch, write the closing dreamtime entry, stop. No web research, no multi-step rewrites; bank the decision as an executable instruction so a run on mains power or the EOD run can carry it out.
+
 Dedicated time for deep reflection and self-improvement. Runs automatically late at night when not interrupting work.
 
 **Important:** This runs in the background with no user interaction. Think freely, research openly, update files directly.
